@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -21,6 +19,7 @@ package com.ververica.cdc.connectors.tests;
 import com.ververica.cdc.connectors.tests.utils.FlinkContainerTestEnvironment;
 import com.ververica.cdc.connectors.tests.utils.JdbcProxy;
 import com.ververica.cdc.connectors.tests.utils.TestUtils;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -61,7 +60,6 @@ public class PostgresE2eITCase extends FlinkContainerTestEnvironment {
             DockerImageName.parse("debezium/postgres:9.6").asCompatibleSubstituteFor("postgres");
 
     private static final Path postgresCdcJar = TestUtils.getResource("postgres-cdc-connector.jar");
-    private static final Path jdbcJar = TestUtils.getResource("jdbc-connector.jar");
     private static final Path mysqlDriverJar = TestUtils.getResource("mysql-driver.jar");
 
     @ClassRule
@@ -78,6 +76,11 @@ public class PostgresE2eITCase extends FlinkContainerTestEnvironment {
     public void before() {
         super.before();
         initializePostgresTable("postgres_inventory");
+    }
+
+    @After
+    public void after() {
+        super.after();
     }
 
     @Test

@@ -1,34 +1,37 @@
-# What's Flink CDC
+# Overview
 
-Flink CDC Connectors is a set of source connectors for <a href="https://flink.apache.org/">Apache Flink</a>, ingesting changes from different databases using change data capture (CDC).
-The Flink CDC Connectors integrates Debezium as the engine to capture data changes. So it can fully leverage the ability of Debezium. See more about what is [Debezium](https://github.com/debezium/debezium).
+CDC Connectors for Apache Flink<sup>®</sup> is a set of source connectors for <a href="https://flink.apache.org/">Apache Flink<sup>®</sup></a>, ingesting changes from different databases using change data capture (CDC).
+The CDC Connectors for Apache Flink<sup>®</sup> integrate Debezium as the engine to capture data changes. So it can fully leverage the ability of Debezium. See more about what is [Debezium](https://github.com/debezium/debezium).
+
+![Flink_CDC](/_static/fig/flinkcdc.png "Flink CDC")
 
 ## Supported Connectors
 
-| Database | Version |
-| --- | --- |
-| MySQL | Database: 5.7, 8.0.x <br/>JDBC Driver: 8.0.16 |
-| PostgreSQL | Database: 9.6, 10, 11, 12 <br/>JDBC Driver: 42.2.12|
-| MongoDB | Database: 3.6, 4.x, 5.0 <br/>MongoDB Driver: 4.3.1|
-| Oracle | Database: 11, 12, 19 <br/>Oracle Driver: 19.3.0.0|
-
-## Supported Formats
-
-| Format | Supported Connector | Flink Version |
-| --- | --- | --- |
-| <a href="https://github.com/ververica/flink-cdc-connectors/wiki/Changelog-JSON-Format">Changelog Json</a> | <a href="https://ci.apache.org/projects/flink/flink-docs-release-1.13/dev/table/connectors/kafka.html">Apache Kafka</a> | 1.11+ |
+| Connector                                    | Database                                                                                                                                                                                                                                                                                                                                                                                             | Driver                  |
+|----------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------|
+| [mongodb-cdc](connectors/mongodb-cdc.md)     | <li> [MongoDB](https://www.mongodb.com): 3.6, 4.x, 5.0                                                                                                                                                                                                                                                                                                                                               | MongoDB Driver: 4.3.1   |
+| [mysql-cdc](connectors/mysql-cdc.md)         | <li> [MySQL](https://dev.mysql.com/doc): 5.6, 5.7, 8.0.x <li> [RDS MySQL](https://www.aliyun.com/product/rds/mysql): 5.6, 5.7, 8.0.x <li> [PolarDB MySQL](https://www.aliyun.com/product/polardb): 5.6, 5.7, 8.0.x <li> [Aurora MySQL](https://aws.amazon.com/cn/rds/aurora): 5.6, 5.7, 8.0.x <li> [MariaDB](https://mariadb.org): 10.x <li> [PolarDB X](https://github.com/ApsaraDB/galaxysql): 2.0.1 | JDBC Driver: 8.0.27     |
+| [oceanbase-cdc](connectors/oceanbase-cdc.md) | <li> [OceanBase CE](https://open.oceanbase.com): 3.1.x <li> [OceanBase EE](https://www.oceanbase.com/product/oceanbase) (MySQL mode): 2.x, 3.x                                                                                                                                                                                                                                                       | JDBC Driver: 5.1.4x     |
+| [oracle-cdc](connectors/oracle-cdc.md)       | <li> [Oracle](https://www.oracle.com/index.html): 11, 12, 19                                                                                                                                                                                                                                                                                                                                         | Oracle Driver: 19.3.0.0 |
+| [postgres-cdc](connectors/postgres-cdc.md)   | <li> [PostgreSQL](https://www.postgresql.org): 9.6, 10, 11, 12                                                                                                                                                                                                                                                                                                                                       | JDBC Driver: 42.2.12    |
+| [sqlserver-cdc](connectors/sqlserver-cdc.md) | <li> [Sqlserver](https://www.microsoft.com/sql-server): 2012, 2014, 2016, 2017, 2019                                                                                                                                                                                                                                                                                                                 | JDBC Driver: 7.2.2.jre8 | 
+| [tidb-cdc](connectors/tidb-cdc.md)           | <li> [TiDB](https://www.pingcap.com/): 5.1.x, 5.2.x, 5.3.x, 5.4.x, 6.0.0                                                                                                                                                                                                                                                                                                                             | JDBC Driver: 8.0.27     | 
+| [db2-cdc](connectors/db2-cdc.md)             | <li> [Db2](https://www.ibm.com/products/db2): 11.5                                                                                                                                                                                                                                                                                                                                                   | DB2 Driver: 11.5.0.0     | 
 
 ## Supported Flink Versions 
-The version mapping between Flink CDC Connectors and Flink.
-| Flink CDC Connector Version | Flink Version |
-| --- | --- |
-|1.0.0 | 1.11.* |
-|1.1.0 | 1.11.* |
-|1.2.0 | 1.12.* |
-|1.3.0 | 1.12.* |
-|1.4.0 | 1.13.* |
-|2.0.* | 1.13.* |
-|2.1.* | 1.13.* |
+The following table shows the version mapping between Flink<sup>®</sup> CDC Connectors and Flink<sup>®</sup>:
+
+| Flink<sup>®</sup> CDC Version | Flink<sup>®</sup> Version |
+|:---:|:---:|
+| <font color="DarkCyan">1.0.0</font> | <font color="MediumVioletRed">1.11.*</font> |
+| <font color="DarkCyan">1.1.0</font> | <font color="MediumVioletRed">1.11.*</font> |
+| <font color="DarkCyan">1.2.0</font> | <font color="MediumVioletRed">1.12.*</font> |
+| <font color="DarkCyan">1.3.0</font> | <font color="MediumVioletRed">1.12.*</font> |
+| <font color="DarkCyan">1.4.0</font> | <font color="MediumVioletRed">1.13.*</font> |
+| <font color="DarkCyan">2.0.*</font> | <font color="MediumVioletRed">1.13.*</font> |
+| <font color="DarkCyan">2.1.*</font> | <font color="MediumVioletRed">1.13.*</font> |
+| <font color="DarkCyan">2.2.*</font> | <font color="MediumVioletRed">1.13.\*</font>, <font color="MediumVioletRed">1.14.\*</font> |
+| <font color="DarkCyan">2.3.*</font> | <font color="MediumVioletRed">1.13.\*</font>, <font color="MediumVioletRed">1.14.\*</font>, <font color="MediumVioletRed">1.15.\*</font>, <font color="MediumVioletRed">1.16.0</font> |
 
 ## Features
 
@@ -78,8 +81,8 @@ Include following Maven dependency (available through Maven Central):
   <groupId>com.ververica</groupId>
   <!-- add the dependency matching your database -->
   <artifactId>flink-connector-mysql-cdc</artifactId>
-  <!-- the dependency is available only for stable releases. -->
-  <version>2.2-SNAPSHOT</version>
+  <!-- The dependency is available only for stable releases, SNAPSHOT dependency need build by yourself. -->
+  <version>2.4-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -248,6 +251,16 @@ In some cases, users can use the `JsonDebeziumDeserializationSchema(true)` Const
 ```
 Usually, it is recommended to exclude schema because schema fields makes the messages very verbose which reduces parsing performance.
 
+The `JsonDebeziumDeserializationSchema` can also accept custom configuration of `JsonConverter`, for example if you want to obtain numeric output for decimal data,
+you can construct `JsonDebeziumDeserializationSchema` as following:
+
+```java
+ Map<String, Object> customConverterConfigs = new HashMap<>();
+ customConverterConfigs.put(JsonConverterConfig.DECIMAL_FORMAT_CONFIG, "numeric");
+ JsonDebeziumDeserializationSchema schema = 
+      new JsonDebeziumDeserializationSchema(true, customConverterConfigs);
+```
+
 ## Building from source
 
 Prerequisites:
@@ -261,7 +274,7 @@ cd flink-cdc-connectors
 mvn clean install -DskipTests
 ```
 
-Flink CDC Connectors is now available at your local `.m2` repository.
+The dependencies are now available in your local `.m2` repository.
 
 ## License
 

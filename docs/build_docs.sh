@@ -1,12 +1,10 @@
 #!/bin/bash
 ################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+#  Copyright 2022 Ververica Inc.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
@@ -27,6 +25,12 @@ python3 -m pip install -U sphinx==4.1.1 myst-parser==0.15.2 pygments==2.10.0 sph
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
 export REPO_NAME="${GITHUB_REPOSITORY##*/}"
 temp_docs_root=`mktemp -d`
+
+ls
+
+# step-1.5: copy main site content to temp dir
+# this must be done before `make -C docs clean` otherwise the contents will be removed
+rsync -avz "docs/site/" "${temp_docs_root}/"
 
 # step-2: build sites for all branches(for multiple versioned docs), excludes 'HEAD' and 'gh-pages'
 make -C docs clean
@@ -59,18 +63,6 @@ git remote add deploy "https://token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSIT
 git checkout -b gh-pages
 
 touch .nojekyll
-cat > index.html <<EOF
-<!DOCTYPE html>
-<html>
-   <head>
-      <title>Flink CDC</title>
-      <meta http-equiv = "refresh" content="0; url='/${REPO_NAME}/master/'" />
-   </head>
-   <body>
-      <p>Please wait while you're redirected to our <a href="/${REPO_NAME}/master/">documentation</a>.</p>
-   </body>
-</html>
-EOF
 
 git add .
 git commit -m "Generated docs from commit ${GITHUB_SHA}"

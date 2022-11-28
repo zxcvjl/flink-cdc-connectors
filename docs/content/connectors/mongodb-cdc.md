@@ -8,13 +8,12 @@ Dependencies
 In order to setup the MongoDB CDC connector, the following table provides dependency information for both projects using a build automation tool (such as Maven or SBT) and SQL Client with SQL JAR bundles.
 
 ### Maven dependency
-<!-- fixme: correct the version -->
 ```
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-mongodb-cdc</artifactId>
-  <!-- the dependency is available only for stable releases. -->
-  <version>2.2-SNAPSHOT</version>
+  <!-- The dependency is available only for stable releases, SNAPSHOT dependency need build by yourself. -->
+  <version>2.4-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -22,7 +21,9 @@ In order to setup the MongoDB CDC connector, the following table provides depend
 
 ```Download link is available only for stable releases.```
 
-Download [flink-sql-connector-mongodb-cdc-2.2-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mongodb-cdc/2.2-SNAPSHOT/flink-sql-connector-mongodb-cdc-2.2-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+Download [flink-sql-connector-mongodb-cdc-2.4-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mongodb-cdc/2.4-SNAPSHOT/flink-sql-connector-mongodb-cdc-2.4-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+
+**Note:** flink-sql-connector-mongodb-cdc-XXX-SNAPSHOT version is the code corresponding to the development branch. Users need to download the source code and compile the corresponding jar. Users should use the released version, such as [flink-sql-connector-mongodb-cdc-2.2.1.jar](https://mvnrepository.com/artifact/com.ververica/flink-sql-connector-mongodb-cdc), the released version will be available in the Maven central warehouse.
 
 Setup MongoDB
 ----------------
@@ -55,14 +56,37 @@ Starting in version 4.0, MongoDB only supports pv1. pv1 is the default for all n
 
   ```javascript
   use admin;
-  db.createUser({
-    user: "flinkuser",
-    pwd: "flinkpw",
-    roles: [
-      { role: "read", db: "admin" }, //read role includes changeStream privilege 
-      { role: "readAnyDatabase", db: "admin" } //for snapshot reading
-    ]
-  });
+  db.createRole(
+      {
+          role: "flinkrole",
+          privileges: [{
+              // Grant privileges on all non-system collections in all databases
+              resource: { db: "", collection: "" },
+              actions: [
+                  "splitVector",
+                  "listDatabases",
+                  "listCollections",
+                  "collStats",
+                  "find",
+                  "changeStream" ]
+          }],
+          roles: [
+              // Read config.collections and config.chunks
+              // for sharded cluster snapshot splitting.
+              { role: 'read', db: 'config' }
+          ]
+      }
+  );
+
+  db.createUser(
+    {
+        user: 'flinkuser',
+        pwd: 'flinkpw',
+        roles: [
+           { role: 'flinkrole', db: 'admin' }
+        ]
+    }
+  );
   ```
 
 
@@ -94,11 +118,11 @@ CREATE TABLE products (
 SELECT * FROM products;
 ```
 
-**Note that** 
+**Note that**
 
-MongoDB's change event record doesn't have update before message. So, we can only convert it to Flink's UPSERT changelog stream.
-An upsert stream requires a unique key, so we must declare `_id` as primary key. 
-We can't declare other column as primary key, becauce delete operation do not contain's the key and value besides `_id` and `sharding key`.
+MongoDB's change event record doesn't have updated before message. So, we can only convert it to Flink's UPSERT changelog stream.
+An upsert stream requires a unique key, so we must declare `_id` as primary key.
+We can't declare other column as primary key, because delete operation does not contain the key and value besides `_id` and `sharding key`.
 
 Connector Options
 ----------------
@@ -151,17 +175,19 @@ Connector Options
     </tr>
     <tr>
       <td>database</td>
-      <td>required</td>
+      <td>optional</td>
       <td style="word-wrap: break-word;">(none)</td>
       <td>String</td>
-      <td>Name of the database to watch for changes.</td>
+      <td>Name of the database to watch for changes. If not set then all databases will be captured. <br>
+          The database also supports regular expressions to monitor multiple databases matching the regular expression.</td>
     </tr>
     <tr>
       <td>collection</td>
-      <td>required</td>
+      <td>optional</td>
       <td style="word-wrap: break-word;">(none)</td>
       <td>String</td>
-      <td>Name of the collection in the database to watch for changes.</td>
+      <td>Name of the collection in the database to watch for changes. If not set then all collections will be captured.<br>
+          The collection also supports regular expressions to monitor multiple collections matching fully-qualified collection identifiers.</td>
     </tr>
     <tr>
       <td>connection.options</td>
@@ -173,24 +199,6 @@ Connector Options
       </td>
     </tr>
     <tr>
-      <td>errors.tolerance</td>
-      <td>optional</td>
-      <td style="word-wrap: break-word;">none</td>
-      <td>String</td>
-      <td>Whether to continue processing messages if an error is encountered.
-          Accept <code>none</code> or <code>all</code>.
-          When set to <code>none</code>, the connector reports an error and blocks further processing of the rest of the records
-          when it encounters an error. When set to <code>all</code>, the connector silently ignores any bad messages.
-      </td>
-    </tr> 
-    <tr>
-      <td>errors.log.enable</td>
-      <td>optional</td>
-      <td style="word-wrap: break-word;">true</td>
-      <td>Boolean</td>
-      <td>Whether details of failed operations should be written to the log file.</td>
-    </tr>
-    <tr>
       <td>copy.existing</td>
       <td>optional</td>
       <td style="word-wrap: break-word;">true</td>
@@ -198,41 +206,30 @@ Connector Options
       <td>Whether copy existing data from source collections.</td>
     </tr>
     <tr>
-      <td>copy.existing.pipeline</td>
-      <td>optional</td>
-      <td style="word-wrap: break-word;">(none)</td>
-      <td>String</td>
-      <td> An array of JSON objects describing the pipeline operations to run when copying existing data.<br>
-           This can improve the use of indexes by the copying manager and make copying more efficient.
-           eg. <code>[{"$match": {"closed": "false"}}]</code> ensures that 
-           only documents in which the closed field is set to false are copied.
-      </td>
-    </tr>
-    <tr>
-      <td>copy.existing.max.threads</td>
-      <td>optional</td>
-      <td style="word-wrap: break-word;">Processors Count</td>
-      <td>Integer</td>
-      <td>The number of threads to use when performing the data copy.</td>
-    </tr>
-    <tr>
       <td>copy.existing.queue.size</td>
       <td>optional</td>
-      <td style="word-wrap: break-word;">16000</td>
+      <td style="word-wrap: break-word;">10240</td>
       <td>Integer</td>
       <td>The max size of the queue to use when copying data.</td>
     </tr>
     <tr>
+      <td>batch.size</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">1024</td>
+      <td>Integer</td>
+      <td>The cursor batch size.</td>
+    </tr>
+    <tr>
       <td>poll.max.batch.size</td>
       <td>optional</td>
-      <td style="word-wrap: break-word;">1000</td>
+      <td style="word-wrap: break-word;">1024</td>
       <td>Integer</td>
       <td>Maximum number of change stream documents to include in a single batch when polling for new data.</td>
     </tr>
     <tr>
       <td>poll.await.time.ms</td>
       <td>optional</td>
-      <td style="word-wrap: break-word;">1500</td>
+      <td style="word-wrap: break-word;">1000</td>
       <td>Integer</td>
       <td>The amount of time to wait before checking for new results on the change stream.</td>
     </tr>
@@ -243,12 +240,26 @@ Connector Options
       <td>Integer</td>
       <td>The length of time in milliseconds between sending heartbeat messages. Use 0 to disable.</td>
     </tr>
+    <tr>
+      <td>scan.incremental.snapshot.enabled</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">false</td>
+      <td>Boolean</td>
+      <td>Whether enable incremental snapshot. The incremental snapshot feature only supports after MongoDB 4.0.</td>
+    </tr>
+    <tr>
+      <td>scan.incremental.snapshot.chunk.size.mb</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">64</td>
+      <td>Integer</td>
+      <td>The chunk size mb of incremental snapshot.</td>
+    </tr>
     </tbody>
 </table>
 </div>
 
-Note: `heartbeat.interval.ms` is highly recommended to set a proper value larger than 0 **if the collection changes slowly**.
-The heartbeat event can pushing the `resumeToken` forward to avoid `resumeToken` being expired when we recover the Flink job from a checkpoint or savepoint.
+Note: `heartbeat.interval.ms` is highly recommended setting a proper value larger than 0 **if the collection changes slowly**.
+The heartbeat event can push the `resumeToken` forward to avoid `resumeToken` being expired when we recover the Flink job from a checkpoint or savepoint.
 
 Available Metadata
 ----------------
@@ -286,7 +297,7 @@ The extended CREATE TABLE example demonstrates the syntax for exposing these met
 ```sql
 CREATE TABLE products (
     db_name STRING METADATA FROM 'database_name' VIRTUAL,
-    table_name STRING METADATA  FROM 'table_name' VIRTUAL,
+    collection_name STRING METADATA  FROM 'collection_name' VIRTUAL,
     operation_ts TIMESTAMP_LTZ(3) METADATA FROM 'op_ts' VIRTUAL,
     _id STRING, // must be declared
     name STRING,
@@ -324,19 +335,19 @@ This can filter only required data and improve the use of indexes by the copying
 In the following example, the `$match` aggregation operator ensures that only documents in which the closed field is set to false are copied.
 
 ```
-copy.existing.pipeline=[ { "$match": { "closed": "false" } } ]
+'copy.existing.pipeline' = '[ { "$match": { "closed": "false" } } ]'
 ```
 
 ### Change Streams
 
-We integrates the [MongoDB's official Kafka Connector](https://docs.mongodb.com/kafka-connector/current/kafka-source/) to read snapshot or change events from MongoDB and drive it by Debezium's `EmbeddedEngine`.
+We integrate the [MongoDB's official Kafka Connector](https://docs.mongodb.com/kafka-connector/current/kafka-source/) to read snapshot or change events from MongoDB and drive it by Debezium's `EmbeddedEngine`.
 
-Debezium's `EmbeddedEngine` provides a mechanism for running a single Kafka Connect `SourceConnector` within an application's process and it can drive any standard Kafka Connect `SourceConnector` properly even which is not provided by Debezium.
+Debezium's `EmbeddedEngine` provides a mechanism for running a single Kafka Connect `SourceConnector` within an application's process, and it can drive any standard Kafka Connect `SourceConnector` properly even which is not provided by Debezium.
 
-We choose **MongoDB's official Kafka Connector** instead of the **Debezium's MongoDB Connector** cause they use a different change data capture mechanism.
+We choose **MongoDB's official Kafka Connector** instead of the **Debezium's MongoDB Connector** because they use a different change data capture mechanism.
 
-- For Debezium's MongoDB Connector, it read the `oplog.rs` collection of each replica-set's master node.
-- For MongoDB's Kafka Connector, it subscribe `Change Stream` of MongoDB.
+- For Debezium's MongoDB Connector, it reads the `oplog.rs` collection of each replica-set's master node.
+- For MongoDB's Kafka Connector, it subscribes `Change Stream` of MongoDB.
 
 MongoDB's `oplog.rs` collection doesn't keep the changed record's update before state, so it's hard to extract the full document state by a single `oplog.rs` record and convert it to change log stream accepted by Flink (Insert Only, Upsert, All).
 Additionally, MongoDB 5 (released in July 2021) has changed the oplog format, so the current Debezium connector cannot be used with it.
@@ -365,8 +376,8 @@ public class MongoDBSourceExample {
                 .hosts("localhost:27017")
                 .username("flink")
                 .password("flinkpw")
-                .database("inventory")
-                .collection("products")
+                .databaseList("inventory") // set captured database, support regex
+                .collectionList("inventory.products", "inventory.orders") //set captured collections, support regex
                 .deserializer(new JsonDebeziumDeserializationSchema())
                 .build();
 
@@ -380,12 +391,48 @@ public class MongoDBSourceExample {
 }
 ```
 
+The MongoDB CDC incremental connector (after 2.3.0) can be used as the following shows:
+```java
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
+import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
+
+public class MongoDBIncrementalSourceExample {
+    public static void main(String[] args) throws Exception {
+        MongoDBSource<String> mongoSource =
+                MongoDBSource.<String>builder()
+                        .hosts("localhost:27017")
+                        .databaseList("inventory") // set captured database, support regex
+                        .collectionList("inventory.products", "inventory.orders") //set captured collections, support regex
+                        .username("flink")
+                        .password("flinkpw")
+                        .deserializer(new JsonDebeziumDeserializationSchema())
+                        .build();
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        // enable checkpoint
+        env.enableCheckpointing(3000);
+        // set the source parallelism to 2
+        env.fromSource(mongoSource, WatermarkStrategy.noWatermarks(), "MongoDBIncrementalSource")
+                .setParallelism(2)
+                .print()
+                .setParallelism(1);
+
+        env.execute("Print MongoDB Snapshot + Change Stream");
+    }
+}
+```
+
+**Note:** 
+- If database regex is used, `readAnyDatabase` role is required.
+- The incremental snapshot feature only supports after MongoDB 4.0.
 
 Data Type Mapping
 ----------------
 [BSON](https://docs.mongodb.com/manual/reference/bson-types/) short for **Binary JSON** is a bin­ary-en­coded seri­al­iz­a­tion of JSON-like format used to store documents and make remote procedure calls in MongoDB.
 
-[Flink SQL Data Type](https://ci.apache.org/projects/flink/flink-docs-release-1.13/docs/dev/table/types/) is similar to the SQL standard’s data type terminology which describes the logical type of a value in the table ecosystem. It can be used to declare input and/or output types of operations.
+[Flink SQL Data Type](https://nightlies.apache.org/flink/flink-docs-release-1.16/docs/dev/table/types/) is similar to the SQL standard’s data type terminology which describes the logical type of a value in the table ecosystem. It can be used to declare input and/or output types of operations.
 
 In order to enable Flink SQL to process data from heterogeneous data sources, the data types of heterogeneous data sources need to be uniformly converted to Flink SQL data types.
 
@@ -505,4 +552,9 @@ Reference
 - [Replica set protocol](https://docs.mongodb.com/manual/reference/replica-configuration/#mongodb-rsconf-rsconf.protocolVersion)
 - [Connection String Options](https://docs.mongodb.com/manual/reference/connection-string/#std-label-connections-connection-options)
 - [BSON Types](https://docs.mongodb.com/manual/reference/bson-types/)
-- [Flink DataTypes](https://ci.apache.org/projects/flink/flink-docs-release-1.13/docs/dev/table/types/)
+- [Flink DataTypes](https://nightlies.apache.org/flink/flink-docs-release-1.16/docs/dev/table/types/)
+
+FAQ
+--------
+* [FAQ(English)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ)
+* [FAQ(中文)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ(ZH))

@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -49,7 +47,7 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
 
     public static final MySqlSplitSerializer INSTANCE = new MySqlSplitSerializer();
 
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
@@ -104,6 +102,7 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
             writeFinishedSplitsInfo(binlogSplit.getFinishedSnapshotSplitInfos(), out);
             writeTableSchemas(binlogSplit.getTableSchemas(), out);
             out.writeInt(binlogSplit.getTotalFinishedSplitSize());
+            out.writeBoolean(binlogSplit.isSuspended());
             final byte[] result = out.getCopyOfBuffer();
             out.clear();
             // optimization: cache the serialized from, so we avoid the byte work during repeated
@@ -119,6 +118,7 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
             case 1:
             case 2:
             case 3:
+            case 4:
                 return deserializeSplit(version, serialized);
             default:
                 throw new IOException("Unknown version: " + version);
@@ -156,8 +156,12 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
                     readFinishedSplitsInfo(version, in);
             Map<TableId, TableChange> tableChangeMap = readTableSchemas(version, in);
             int totalFinishedSplitSize = finishedSplitsInfo.size();
-            if (version == 3) {
+            boolean isSuspended = false;
+            if (version >= 3) {
                 totalFinishedSplitSize = in.readInt();
+                if (version > 3) {
+                    isSuspended = in.readBoolean();
+                }
             }
             in.releaseArrays();
             return new MySqlBinlogSplit(
@@ -166,13 +170,14 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
                     endingOffset,
                     finishedSplitsInfo,
                     tableChangeMap,
-                    totalFinishedSplitSize);
+                    totalFinishedSplitSize,
+                    isSuspended);
         } else {
             throw new IOException("Unknown split kind: " + splitKind);
         }
     }
 
-    private static void writeTableSchemas(
+    public static void writeTableSchemas(
             Map<TableId, TableChange> tableSchemas, DataOutputSerializer out) throws IOException {
         FlinkJsonTableChangeSerializer jsonSerializer = new FlinkJsonTableChangeSerializer();
         DocumentWriter documentWriter = DocumentWriter.defaultWriter();
@@ -188,7 +193,7 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
         }
     }
 
-    private static Map<TableId, TableChange> readTableSchemas(int version, DataInputDeserializer in)
+    public static Map<TableId, TableChange> readTableSchemas(int version, DataInputDeserializer in)
             throws IOException {
         DocumentReader documentReader = DocumentReader.defaultReader();
         Map<TableId, TableChange> tableSchemas = new HashMap<>();
@@ -202,6 +207,7 @@ public final class MySqlSplitSerializer implements SimpleVersionedSerializer<MyS
                     break;
                 case 2:
                 case 3:
+                case 4:
                     final int len = in.readInt();
                     final byte[] bytes = new byte[len];
                     in.read(bytes);

@@ -1,13 +1,11 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,15 +16,23 @@
 
 package com.ververica.cdc.connectors.utils;
 
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
+import org.apache.flink.table.types.DataType;
+
+import com.ververica.cdc.debezium.DebeziumSourceFunction;
 import io.debezium.data.Envelope;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
-/** Utilities for asserting {@link SourceRecord}. */
+/** Utilities for asserting {@link SourceRecord} and {@link DebeziumSourceFunction}. */
 public class AssertUtils {
     /**
      * Verify that the given {@link SourceRecord} is a {@link Envelope.Operation#CREATE
@@ -219,5 +225,22 @@ public class AssertUtils {
     public static void assertDelete(SourceRecord record, String pkField, int pk) {
         hasValidKey(record, pkField, pk);
         assertDelete(record, true);
+    }
+
+    /**
+     * Verify that the given produced data type of {@code DebeziumSourceFunction<RowData>} matches
+     * the resolved schema data type.
+     *
+     * @param debeziumSourceFunction the actual DebeziumSourceFunction
+     * @param expectedProducedType expected DataType of resolved schema
+     */
+    public static void assertProducedTypeOfSourceFunction(
+            DebeziumSourceFunction<RowData> debeziumSourceFunction, DataType expectedProducedType) {
+        TypeInformation<RowData> producedType = debeziumSourceFunction.getProducedType();
+        assertThat(producedType, instanceOf(InternalTypeInfo.class));
+        InternalTypeInfo<RowData> rowDataInternalTypeInfo =
+                (InternalTypeInfo<RowData>) producedType;
+        DataType producedDataType = rowDataInternalTypeInfo.getDataType();
+        assertEquals(expectedProducedType.toString(), producedDataType.toString());
     }
 }

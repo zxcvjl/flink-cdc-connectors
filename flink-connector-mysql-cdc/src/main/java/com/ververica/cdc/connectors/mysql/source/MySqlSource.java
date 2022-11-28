@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -31,6 +29,7 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import com.ververica.cdc.connectors.mysql.MySqlValidator;
@@ -48,19 +47,19 @@ import com.ververica.cdc.connectors.mysql.source.enumerator.MySqlSourceEnumerato
 import com.ververica.cdc.connectors.mysql.source.metrics.MySqlSourceReaderMetrics;
 import com.ververica.cdc.connectors.mysql.source.reader.MySqlRecordEmitter;
 import com.ververica.cdc.connectors.mysql.source.reader.MySqlSourceReader;
+import com.ververica.cdc.connectors.mysql.source.reader.MySqlSourceReaderContext;
 import com.ververica.cdc.connectors.mysql.source.reader.MySqlSplitReader;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplitSerializer;
+import com.ververica.cdc.connectors.mysql.source.split.SourceRecords;
 import com.ververica.cdc.connectors.mysql.table.StartupMode;
 import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
 import io.debezium.jdbc.JdbcConnection;
-import io.debezium.relational.TableId;
-import org.apache.kafka.connect.source.SourceRecord;
 
-import java.util.List;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.function.Supplier;
 
-import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.discoverCapturedTables;
 import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.openJdbcConnection;
 
 /**
@@ -70,12 +69,12 @@ import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.openJdbc
  * <pre>
  *     1. The source supports parallel capturing table change.
  *     2. The source supports checkpoint in split level when read snapshot data.
- *     3. The source does need apply any lock of MySQL.
+ *     3. The source doesn't need apply any lock of MySQL.
  * </pre>
  *
  * <pre>{@code
  * MySqlSource
- *     .<RowData>builder()
+ *     .<String>builder()
  *     .hostname("localhost")
  *     .port(3306)
  *     .databaseList("mydb")
@@ -117,6 +116,10 @@ public class MySqlSource<T>
         this.deserializationSchema = deserializationSchema;
     }
 
+    public MySqlSourceConfigFactory getConfigFactory() {
+        return configFactory;
+    }
+
     @Override
     public Boundedness getBoundedness() {
         return Boundedness.CONTINUOUS_UNBOUNDED;
@@ -128,13 +131,24 @@ public class MySqlSource<T>
         // create source config for the given subtask (e.g. unique server id)
         MySqlSourceConfig sourceConfig =
                 configFactory.createConfig(readerContext.getIndexOfSubtask());
-        FutureCompletingBlockingQueue<RecordsWithSplitIds<SourceRecord>> elementsQueue =
+        FutureCompletingBlockingQueue<RecordsWithSplitIds<SourceRecords>> elementsQueue =
                 new FutureCompletingBlockingQueue<>();
+
+        final Method metricGroupMethod = readerContext.getClass().getMethod("metricGroup");
+        metricGroupMethod.setAccessible(true);
+        final MetricGroup metricGroup = (MetricGroup) metricGroupMethod.invoke(readerContext);
+
         final MySqlSourceReaderMetrics sourceReaderMetrics =
-                new MySqlSourceReaderMetrics(readerContext.metricGroup());
+                new MySqlSourceReaderMetrics(metricGroup);
         sourceReaderMetrics.registerMetrics();
+        MySqlSourceReaderContext mySqlSourceReaderContext =
+                new MySqlSourceReaderContext(readerContext);
         Supplier<MySqlSplitReader> splitReaderSupplier =
-                () -> new MySqlSplitReader(sourceConfig, readerContext.getIndexOfSubtask());
+                () ->
+                        new MySqlSplitReader(
+                                sourceConfig,
+                                readerContext.getIndexOfSubtask(),
+                                mySqlSourceReaderContext);
         return new MySqlSourceReader<>(
                 elementsQueue,
                 splitReaderSupplier,
@@ -143,7 +157,7 @@ public class MySqlSource<T>
                         sourceReaderMetrics,
                         sourceConfig.isIncludeSchemaChanges()),
                 readerContext.getConfiguration(),
-                readerContext,
+                mySqlSourceReaderContext,
                 sourceConfig);
     }
 
@@ -158,13 +172,12 @@ public class MySqlSource<T>
         final MySqlSplitAssigner splitAssigner;
         if (sourceConfig.getStartupOptions().startupMode == StartupMode.INITIAL) {
             try (JdbcConnection jdbc = openJdbcConnection(sourceConfig)) {
-                final List<TableId> remainingTables = discoverCapturedTables(jdbc, sourceConfig);
                 boolean isTableIdCaseSensitive = DebeziumUtils.isTableIdCaseSensitive(jdbc);
                 splitAssigner =
                         new MySqlHybridSplitAssigner(
                                 sourceConfig,
                                 enumContext.currentParallelism(),
-                                remainingTables,
+                                new ArrayList<>(),
                                 isTableIdCaseSensitive);
             } catch (Exception e) {
                 throw new FlinkRuntimeException(

@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -100,6 +98,18 @@ public interface MySqlSplitAssigner {
      * @see CheckpointListener#notifyCheckpointComplete(long)
      */
     void notifyCheckpointComplete(long checkpointId);
+
+    /** Gets the split assigner status, see {@code AssignerStatus}. */
+    AssignerStatus getAssignerStatus();
+
+    /**
+     * Suspends the assigner under {@link AssignerStatus#INITIAL_ASSIGNING_FINISHED} or {@link
+     * AssignerStatus#NEWLY_ADDED_ASSIGNING_FINISHED}.
+     */
+    void suspend();
+
+    /** Wakes up the assigner under {@link AssignerStatus#SUSPENDED}. */
+    void wakeup();
 
     /**
      * Called to close the assigner, in case it holds on to any resources, like threads or network

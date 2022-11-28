@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -32,8 +30,8 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceConfig;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlRecords;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
+import com.ververica.cdc.connectors.mysql.source.split.SourceRecords;
 import io.debezium.connector.mysql.MySqlConnection;
-import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,26 +46,32 @@ import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.createBi
 import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.createMySqlConnection;
 
 /** The {@link SplitReader} implementation for the {@link MySqlSource}. */
-public class MySqlSplitReader implements SplitReader<SourceRecord, MySqlSplit> {
+public class MySqlSplitReader implements SplitReader<SourceRecords, MySqlSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(MySqlSplitReader.class);
     private final Queue<MySqlSplit> splits;
     private final MySqlSourceConfig sourceConfig;
     private final int subtaskId;
+    private final MySqlSourceReaderContext context;
 
-    @Nullable private DebeziumReader<SourceRecord, MySqlSplit> currentReader;
+    @Nullable private DebeziumReader<SourceRecords, MySqlSplit> currentReader;
     @Nullable private String currentSplitId;
 
-    public MySqlSplitReader(MySqlSourceConfig sourceConfig, int subtaskId) {
+    public MySqlSplitReader(
+            MySqlSourceConfig sourceConfig, int subtaskId, MySqlSourceReaderContext context) {
         this.sourceConfig = sourceConfig;
         this.subtaskId = subtaskId;
         this.splits = new ArrayDeque<>();
+        this.context = context;
     }
 
     @Override
-    public RecordsWithSplitIds<SourceRecord> fetch() throws IOException {
+    public RecordsWithSplitIds<SourceRecords> fetch() throws IOException {
+
         checkSplitOrStartNext();
-        Iterator<SourceRecord> dataIt = null;
+        checkNeedStopBinlogReader();
+
+        Iterator<SourceRecords> dataIt;
         try {
             dataIt = currentReader.pollSplitRecords();
         } catch (InterruptedException e) {
@@ -77,6 +81,14 @@ public class MySqlSplitReader implements SplitReader<SourceRecord, MySqlSplit> {
         return dataIt == null
                 ? finishedSnapshotSplit()
                 : MySqlRecords.forRecords(currentSplitId, dataIt);
+    }
+
+    private void checkNeedStopBinlogReader() {
+        if (currentReader instanceof BinlogSplitReader
+                && context.needStopBinlogSplitReader()
+                && !currentReader.isFinished()) {
+            ((BinlogSplitReader) currentReader).stopBinlogReadTask();
+        }
     }
 
     @Override
@@ -107,22 +119,23 @@ public class MySqlSplitReader implements SplitReader<SourceRecord, MySqlSplit> {
     }
 
     private void checkSplitOrStartNext() throws IOException {
-        // the binlog reader should keep alive
-        if (currentReader instanceof BinlogSplitReader) {
-            return;
-        }
-
         if (canAssignNextSplit()) {
-            final MySqlSplit nextSplit = splits.poll();
+            MySqlSplit nextSplit = splits.poll();
             if (nextSplit == null) {
-                throw new IOException("Cannot fetch from another split - no split remaining");
+                return;
             }
+
             currentSplitId = nextSplit.splitId();
 
             if (nextSplit.isSnapshotSplit()) {
+                if (currentReader instanceof BinlogSplitReader) {
+                    LOG.info(
+                            "This is the point from binlog split reading change to snapshot split reading");
+                    currentReader.close();
+                    currentReader = null;
+                }
                 if (currentReader == null) {
-                    final MySqlConnection jdbcConnection =
-                            createMySqlConnection(sourceConfig.getDbzConfiguration());
+                    final MySqlConnection jdbcConnection = createMySqlConnection(sourceConfig);
                     final BinaryLogClient binaryLogClient =
                             createBinaryClient(sourceConfig.getDbzConfiguration());
                     final StatefulTaskContext statefulTaskContext =
@@ -135,8 +148,7 @@ public class MySqlSplitReader implements SplitReader<SourceRecord, MySqlSplit> {
                     LOG.info("It's turn to read binlog split, close current snapshot reader");
                     currentReader.close();
                 }
-                final MySqlConnection jdbcConnection =
-                        createMySqlConnection(sourceConfig.getDbzConfiguration());
+                final MySqlConnection jdbcConnection = createMySqlConnection(sourceConfig);
                 final BinaryLogClient binaryLogClient =
                         createBinaryClient(sourceConfig.getDbzConfiguration());
                 final StatefulTaskContext statefulTaskContext =

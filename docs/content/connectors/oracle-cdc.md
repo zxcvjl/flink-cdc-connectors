@@ -13,8 +13,8 @@ In order to setup the Oracle CDC connector, the following table provides depende
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-oracle-cdc</artifactId>
-  <!-- the dependency is available only for stable releases. -->
-  <version>2.2-SNAPSHOT</version>
+  <!-- The dependency is available only for stable releases, SNAPSHOT dependency need build by yourself. -->
+  <version>2.4-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -22,17 +22,24 @@ In order to setup the Oracle CDC connector, the following table provides depende
 
 **Download link is available only for stable releases.**
 
-Download [flink-sql-connector-oracle-cdc-2.2-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-oracle-cdc/2.2-SNAPSHOT/flink-sql-connector-oracle-cdc-2.2-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+Download [flink-sql-connector-oracle-cdc-2.4-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-oracle-cdc/2.4-SNAPSHOT/flink-sql-connector-oracle-cdc-2.4-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+
+**Note:** flink-sql-connector-oracle-cdc-XXX-SNAPSHOT version is the code corresponding to the development branch. Users need to download the source code and compile the corresponding jar. Users should use the released version, such as [flink-sql-connector-oracle-cdc-2.3.0.jar](https://mvnrepository.com/artifact/com.ververica/flink-sql-connector-oracle-cdc), the released version will be available in the Maven central warehouse.
 
 Setup Oracle
 ----------------
 You have to enable log archiving for Oracle database and define an Oracle user with appropriate permissions on all databases that the Debezium Oracle connector monitors.
 
+### For Non-CDB database
+
 1. Enable log archiving 
 
    (1.1). Connect to the database as DBA
-    ```shells
-    sqlplus sys/password@host:port/SID AS SYSDBA
+    ```sql
+    ORACLE_SID=SID
+    export ORACLE_SID
+    sqlplus /nolog
+      CONNECT sys/password AS SYSDBA
     ```
 
    (1.2). Enable log archiving
@@ -44,7 +51,7 @@ You have to enable log archiving for Oracle database and define an Oracle user w
     alter database archivelog;
     alter database open;
    ```
-    <b>Notes:</b>
+    **Note:**
 
     - Enable log archiving requires database restart, pay attention when try to do it
     - The archived logs will occupy a large amount of disk space, so consider clean the expired logs the periodically
@@ -54,7 +61,7 @@ You have to enable log archiving for Oracle database and define an Oracle user w
     -- Should now "Database log mode: Archive Mode"
     archive log list;
     ```
-   <b>Notes:</b>
+   **Note:**
    
    Supplemental logging must be enabled for captured tables or the database in order for data changes to capture the <em>before</em> state of changed database rows.
    The following illustrates how to configure this on the table/database level.
@@ -91,6 +98,7 @@ You have to enable log archiving for Oracle database and define an Oracle user w
      GRANT LOGMINING TO flinkuser;
 
      GRANT CREATE TABLE TO flinkuser;
+     -- need not to execute if set scan.incremental.snapshot.enabled=true(default)
      GRANT LOCK ANY TABLE TO flinkuser;
      GRANT ALTER ANY TABLE TO flinkuser;
      GRANT CREATE SEQUENCE TO flinkuser;
@@ -108,9 +116,79 @@ You have to enable log archiving for Oracle database and define an Oracle user w
      GRANT SELECT ON V_$ARCHIVE_DEST_STATUS TO flinkuser;
      exit;
    ```
+   
+### For CDB database
 
-See more about the [Setting up Oracle](https://debezium.io/documentation/reference/1.5/connectors/oracle.html#setting-up-oracle)
+Overall, the steps for configuring CDB database is quite similar to non-CDB database, but the commands may be different.
+1. Enable log archiving
+   ```sql
+   ORACLE_SID=ORCLCDB
+   export ORACLE_SID
+   sqlplus /nolog
+     CONNECT sys/password AS SYSDBA
+     alter system set db_recovery_file_dest_size = 10G;
+     -- should exist
+     alter system set db_recovery_file_dest = '/opt/oracle/oradata/recovery_area' scope=spfile;
+     shutdown immediate
+     startup mount
+     alter database archivelog;
+     alter database open;
+     -- Should show "Database log mode: Archive Mode"
+     archive log list
+     exit;
+   ```
+   **Note:**
+   You can also use the following commands to enable supplemental logging:
+   ```sql
+   -- Enable supplemental logging for a specific table:
+   ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+   -- Enable supplemental logging for database
+   ALTER DATABASE ADD SUPPLEMENTAL LOG DATA;
+   ```
 
+2. Create an Oracle user with permissions
+   ```sql
+   sqlplus sys/password@//localhost:1521/ORCLCDB as sysdba
+     CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/logminer_tbs.dbf' SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+     exit
+   ```
+   ```sql
+   sqlplus sys/password@//localhost:1521/ORCLPDB1 as sysdba
+     CREATE TABLESPACE logminer_tbs DATAFILE '/opt/oracle/oradata/ORCLCDB/ORCLPDB1/logminer_tbs.dbf' SIZE 25M REUSE AUTOEXTEND ON MAXSIZE UNLIMITED;
+     exit
+   ```
+   ```sql
+   sqlplus sys/password@//localhost:1521/ORCLCDB as sysdba
+     CREATE USER flinkuser IDENTIFIED BY flinkpw DEFAULT TABLESPACE logminer_tbs QUOTA UNLIMITED ON logminer_tbs CONTAINER=ALL;
+     GRANT CREATE SESSION TO flinkuser CONTAINER=ALL;
+     GRANT SET CONTAINER TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$DATABASE to flinkuser CONTAINER=ALL;
+     GRANT FLASHBACK ANY TABLE TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ANY TABLE TO flinkuser CONTAINER=ALL;
+     GRANT SELECT_CATALOG_ROLE TO flinkuser CONTAINER=ALL;
+     GRANT EXECUTE_CATALOG_ROLE TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ANY TRANSACTION TO flinkuser CONTAINER=ALL;
+     GRANT LOGMINING TO flinkuser CONTAINER=ALL;
+     GRANT CREATE TABLE TO flinkuser CONTAINER=ALL;
+     -- need not to execute if set scan.incremental.snapshot.enabled=true(default)
+     GRANT LOCK ANY TABLE TO flinkuser CONTAINER=ALL;
+     GRANT CREATE SEQUENCE TO flinkuser CONTAINER=ALL;
+
+     GRANT EXECUTE ON DBMS_LOGMNR TO flinkuser CONTAINER=ALL;
+     GRANT EXECUTE ON DBMS_LOGMNR_D TO flinkuser CONTAINER=ALL;
+
+     GRANT SELECT ON V_$LOG TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$LOG_HISTORY TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$LOGMNR_LOGS TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$LOGMNR_CONTENTS TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$LOGMNR_PARAMETERS TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$LOGFILE TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$ARCHIVED_LOG TO flinkuser CONTAINER=ALL;
+     GRANT SELECT ON V_$ARCHIVE_DEST_STATUS TO flinkuser CONTAINER=ALL;
+     exit
+   ```
+   
+See more about the [Setting up Oracle](https://debezium.io/documentation/reference/1.6/connectors/oracle.html#setting-up-oracle)
 
 How to create an Oracle CDC table
 ----------------
@@ -120,10 +198,10 @@ The Oracle CDC table can be defined as following:
 ```sql 
 -- register an Oracle table 'products' in Flink SQL
 Flink SQL> CREATE TABLE products (
-     id INT NOT NULL,
-     name STRING,
-     description STRING,
-     weight DECIMAL(10, 3),
+     ID INT NOT NULL,
+     NAME STRING,
+     DESCRIPTION STRING,
+     WEIGHT DECIMAL(10, 3),
      PRIMARY KEY(id) NOT ENFORCED
      ) WITH (
      'connector' = 'oracle-cdc',
@@ -138,6 +216,11 @@ Flink SQL> CREATE TABLE products (
 -- read snapshot and binlogs from products table
 Flink SQL> SELECT * FROM products;
 ```
+**Note:**
+When working with the CDB + PDB model, you are expected to add an extra option `'debezium.database.pdb.name' = 'xxx'` in Flink DDL to specific the name of the PDB to connect to.
+
+**Note:**
+While the connector might work with a variety of Oracle versions and editions, only Oracle 9i, 10g, 11g and 12c have been tested.
 
 Connector Options
 ----------------
@@ -162,10 +245,10 @@ Connector Options
     </tr>
     <tr>
       <td>hostname</td>
-      <td>required</td>
+      <td>optional</td>
       <td style="word-wrap: break-word;">(none)</td>
       <td>String</td>
-      <td>IP address or hostname of the Oracle database server.</td>
+      <td>IP address or hostname of the Oracle database server. If the url is not empty, hostname may not be configured, otherwise hostname can not be empty</td>
     </tr>
     <tr>
       <td>username</td>
@@ -209,6 +292,13 @@ Connector Options
       <td>Integer</td>
       <td>Integer port number of the Oracle database server.</td>
     </tr>
+  <tr>
+      <td>url</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">jdbc:oracle:thin:@{hostname}:{port}:{database-name}</td>
+      <td>String</td>
+      <td>JdbcUrl of the oracle database server . If the hostname and port parameter is configured, the URL is concatenated by hostname port database-name in SID format by default. Otherwise, you need to configure the URL parameter</td>
+    </tr>
     <tr>
       <td>scan.startup.mode</td>
       <td>optional</td>
@@ -216,8 +306,48 @@ Connector Options
       <td>String</td>
       <td>Optional startup mode for Oracle CDC consumer, valid enumerations are "initial"
            and "latest-offset". 
-           Please see <a href="#startup-reading-position">Startup Reading Position</a>section for more detailed information.</td>
-    </tr>  
+           Please see <a href="#startup-reading-position">Startup Reading Position</a> section for more detailed information.</td>
+    </tr>
+    <tr>
+          <td>scan.incremental.snapshot.enabled</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">true</td>
+          <td>Boolean</td>
+          <td>Incremental snapshot is a new mechanism to read snapshot of a table. Compared to the old snapshot mechanism,
+              the incremental snapshot has many advantages, including:
+                (1) source can be parallel during snapshot reading, 
+                (2) source can perform checkpoints in the chunk granularity during snapshot reading, 
+                (3) source doesn't need to acquire ROW SHARE MODE lock before snapshot reading.
+          </td>
+    </tr>
+    <tr>
+          <td>scan.incremental.snapshot.chunk.size</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">8096</td>
+          <td>Integer</td>
+          <td>The chunk size (number of rows) of table snapshot, captured tables are split into multiple chunks when read the snapshot of table.</td>
+    </tr>
+    <tr>
+          <td>scan.snapshot.fetch.size</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">1024</td>
+          <td>Integer</td>
+          <td>The maximum fetch size for per poll when read table snapshot.</td>
+    </tr>
+    <tr>
+          <td>connect.max-retries</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">3</td>
+          <td>Integer</td>
+          <td>The max retry times that the connector should retry to build Oracle database server connection.</td>
+    </tr>
+    <tr>
+          <td>connection.pool.size</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">20</td>
+          <td>Integer</td>
+          <td>The connection pool size.</td>
+    </tr>
     <tr>
       <td>debezium.*</td>
       <td>optional</td>
@@ -225,7 +355,7 @@ Connector Options
       <td>String</td>
       <td>Pass-through Debezium's properties to Debezium Embedded Engine which is used to capture data changes from Oracle server.
           For example: <code>'debezium.snapshot.mode' = 'never'</code>.
-          See more about the <a href="https://debezium.io/documentation/reference/1.5/connectors/oracle.html#oracle-connector-properties">Debezium's Oracle Connector properties</a></td> 
+          See more about the <a href="https://debezium.io/documentation/reference/1.6/connectors/oracle.html#oracle-connector-properties">Debezium's Oracle Connector properties</a></td> 
      </tr>
     </tbody>
 </table>    
@@ -288,10 +418,10 @@ CREATE TABLE products (
     schema_name STRING METADATA FROM 'schema_name' VIRTUAL, 
     table_name STRING METADATA  FROM 'table_name' VIRTUAL,
     operation_ts TIMESTAMP_LTZ(3) METADATA FROM 'op_ts' VIRTUAL,
-    id INT NOT NULL,
-    name STRING,
-    description STRING,
-    weight DECIMAL(10, 3),
+    ID INT NOT NULL,
+    NAME STRING,
+    DESCRIPTION STRING,
+    WEIGHT DECIMAL(10, 3),
     PRIMARY KEY(id) NOT ENFORCED
 ) WITH (
     'connector' = 'oracle-cdc',
@@ -301,16 +431,20 @@ CREATE TABLE products (
     'password' = 'flinkpw',
     'database-name' = 'XE',
     'schema-name' = 'inventory',
-    'table-name' = 'products'
+    'table-name' = 'products',
+    'debezium.log.mining.strategy' = 'online_catalog',
+    'debezium.log.mining.continuous.mine' = 'true'
 );
 ```
+
+**Note** : The Oracle dialect is case-sensitive, it converts field name to uppercase if the field name is not quoted, Flink SQL doesn't convert the field name. Thus for physical columns from oracle database, we should use its converted field name in Oracle when define an `oracle-cdc` table in Flink SQL.
 
 Features
 --------
 
 ### Exactly-Once Processing
 
-The Oracle CDC connector is a Flink Source connector which will read database snapshot first and then continues to read change events with **exactly-once processing** even failures happen. Please read [How the connector works](https://debezium.io/documentation/reference/1.5/connectors/oracle.html#how-the-oracle-connector-works).
+The Oracle CDC connector is a Flink Source connector which will read database snapshot first and then continues to read change events with **exactly-once processing** even failures happen. Please read [How the connector works](https://debezium.io/documentation/reference/1.6/connectors/oracle.html#how-the-oracle-connector-works).
 
 ### Startup Reading Position
 
@@ -339,7 +473,7 @@ import com.ververica.cdc.connectors.oracle.OracleSource;
 public class OracleSourceExample {
   public static void main(String[] args) throws Exception {
      SourceFunction<String> sourceFunction = OracleSource.<String>builder()
-             .hostname()
+             .url("jdbc:oracle:thin:@{hostname}:{port}:{database}")
              .port(1521)
              .database("XE") // monitor XE database
              .schemaList("inventory") // monitor inventory schema
@@ -368,7 +502,7 @@ Data Type Mapping
 <table class="colwidths-auto docutils">
     <thead>
       <tr>
-        <th class="text-left">Oracle type<a href="https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/Data-Types.html"></a></th>
+        <th class="text-left"><a href="https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/Data-Types.html">Oracle type</a></th>
         <th class="text-left">Flink SQL type<a href="{% link dev/table/types.md %}"></a></th>
       </tr>
     </thead>
@@ -450,7 +584,8 @@ Data Type Mapping
         VARCHAR2(n)<br>
         CLOB<br>
         NCLOB<br>
-        XMLType
+        XMLType<br>
+        SYS.XMLTYPE
       </td>
       <td>STRING</td>
     </tr>
@@ -470,3 +605,8 @@ Data Type Mapping
     </tbody>
 </table>
 </div>
+
+FAQ
+--------
+* [FAQ(English)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ)
+* [FAQ(中文)](https://github.com/ververica/flink-cdc-connectors/wiki/FAQ(ZH))

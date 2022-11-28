@@ -23,7 +23,6 @@ services:
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_PASSWORD=1234
       - POSTGRES_DB=postgres
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -70,13 +69,13 @@ docker-compose up -d
 该命令将以 detached 模式自动启动 Docker Compose 配置中定义的所有容器。你可以通过 docker ps 来观察上述的容器是否正常启动了，也可以通过访问 [http://localhost:5601/](http://localhost:5601/) 来查看 Kibana 是否运行正常。
 
 ### 下载 Flink 和所需要的依赖包
-1. 下载 [Flink 1.13.2](https://downloads.apache.org/flink/flink-1.13.2/flink-1.13.2-bin-scala_2.11.tgz) 并将其解压至目录 `flink-1.13.2`
-2. 下载下面列出的依赖包，并将它们放到目录 `flink-1.13.2/lib/` 下：
+1. 下载 [Flink 1.16.0](https://archive.apache.org/dist/flink/flink-1.16.0/flink-1.16.0-bin-scala_2.12.tgz) 并将其解压至目录 `flink-1.16.0`
+2. 下载下面列出的依赖包，并将它们放到目录 `flink-1.16.0/lib/` 下：
 
-   **下载链接只在已发布的版本上可用**
-    - [flink-sql-connector-elasticsearch7_2.11-1.13.2.jar](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-elasticsearch7_2.11/1.13.2/flink-sql-connector-elasticsearch7_2.11-1.13.2.jar)
-    - [flink-sql-connector-mysql-cdc-2.2-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mysql-cdc/2.2-SNAPSHOT/flink-sql-connector-mysql-cdc-2.2-SNAPSHOT.jar)
-    - [flink-sql-connector-postgres-cdc-2.2-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-postgres-cdc/2.2-SNAPSHOT/flink-sql-connector-postgres-cdc-2.2-SNAPSHOT.jar)
+   **下载链接只对已发布的版本有效, SNAPSHOT 版本需要本地编译**
+    - [flink-sql-connector-elasticsearch7-1.16.0.jar](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-elasticsearch7/1.16.0/flink-sql-connector-elasticsearch7-1.16.0.jar)
+    - [flink-sql-connector-mysql-cdc-2.4-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mysql-cdc/2.4-SNAPSHOT/flink-sql-connector-mysql-cdc-2.4-SNAPSHOT.jar)
+    - [flink-sql-connector-postgres-cdc-2.4-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-postgres-cdc/2.4-SNAPSHOT/flink-sql-connector-postgres-cdc-2.4-SNAPSHOT.jar)
 
 ### 准备数据
 #### 在 MySQL 数据库中准备数据
@@ -148,7 +147,7 @@ docker-compose up -d
 
 1. 使用下面的命令跳转至 Flink 目录下
     ```
-    cd flink-1.13.2
+    cd flink-15.2
     ```
    
 2. 使用下面的命令启动 Flink 集群
@@ -309,7 +308,7 @@ Flink SQL> INSERT INTO enriched_orders
 ```shell
 docker-compose down
 ```
-在 Flink 所在目录 `flink-1.13.2` 下执行如下命令停止 Flink 集群：
+在 Flink 所在目录 `flink-1.16.0` 下执行如下命令停止 Flink 集群：
 ```shell
 ./bin/stop-cluster.sh
 ```

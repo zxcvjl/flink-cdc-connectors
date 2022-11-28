@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -29,6 +27,7 @@ import org.apache.kafka.connect.storage.ConverterConfig;
 import org.apache.kafka.connect.storage.ConverterType;
 
 import java.util.HashMap;
+import java.util.Map;
 
 /**
  * A JSON format implementation of {@link DebeziumDeserializationSchema} which deserializes the
@@ -41,10 +40,13 @@ public class JsonDebeziumDeserializationSchema implements DebeziumDeserializatio
     private transient JsonConverter jsonConverter;
 
     /**
-     * Configuration whether to enable {@link JsonConverterConfig.SCHEMAS_ENABLE_CONFIG} to include
+     * Configuration whether to enable {@link JsonConverterConfig#SCHEMAS_ENABLE_CONFIG} to include
      * schema in messages.
      */
     private final Boolean includeSchema;
+
+    /** The custom configurations for {@link JsonConverter}. */
+    private Map<String, Object> customConverterConfigs;
 
     public JsonDebeziumDeserializationSchema() {
         this(false);
@@ -54,19 +56,32 @@ public class JsonDebeziumDeserializationSchema implements DebeziumDeserializatio
         this.includeSchema = includeSchema;
     }
 
+    public JsonDebeziumDeserializationSchema(
+            Boolean includeSchema, Map<String, Object> customConverterConfigs) {
+        this.includeSchema = includeSchema;
+        this.customConverterConfigs = customConverterConfigs;
+    }
+
     @Override
     public void deserialize(SourceRecord record, Collector<String> out) throws Exception {
         if (jsonConverter == null) {
-            // initialize jsonConverter
-            jsonConverter = new JsonConverter();
-            final HashMap<String, Object> configs = new HashMap<>(2);
-            configs.put(ConverterConfig.TYPE_CONFIG, ConverterType.VALUE.getName());
-            configs.put(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, includeSchema);
-            jsonConverter.configure(configs);
+            initializeJsonConverter();
         }
         byte[] bytes =
                 jsonConverter.fromConnectData(record.topic(), record.valueSchema(), record.value());
         out.collect(new String(bytes));
+    }
+
+    /** Initialize {@link JsonConverter} with given configs. */
+    private void initializeJsonConverter() {
+        jsonConverter = new JsonConverter();
+        final HashMap<String, Object> configs = new HashMap<>(2);
+        configs.put(ConverterConfig.TYPE_CONFIG, ConverterType.VALUE.getName());
+        configs.put(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, includeSchema);
+        if (customConverterConfigs != null) {
+            configs.putAll(customConverterConfigs);
+        }
+        jsonConverter.configure(configs);
     }
 
     @Override

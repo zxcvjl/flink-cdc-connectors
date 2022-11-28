@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -55,6 +53,9 @@ public class MySqlSourceConfig implements Serializable {
     private final double distributionFactorUpper;
     private final double distributionFactorLower;
     private final boolean includeSchemaChanges;
+    private final boolean scanNewlyAddedTableEnabled;
+    private final Properties jdbcProperties;
+    @Nullable private final String chunkKeyColumn;
 
     // --------------------------------------------------------------------------------------------
     // Debezium Configurations
@@ -82,7 +83,10 @@ public class MySqlSourceConfig implements Serializable {
             double distributionFactorUpper,
             double distributionFactorLower,
             boolean includeSchemaChanges,
-            Properties dbzProperties) {
+            boolean scanNewlyAddedTableEnabled,
+            Properties dbzProperties,
+            Properties jdbcProperties,
+            @Nullable String chunkKeyColumn) {
         this.hostname = checkNotNull(hostname);
         this.port = port;
         this.username = checkNotNull(username);
@@ -101,9 +105,12 @@ public class MySqlSourceConfig implements Serializable {
         this.distributionFactorUpper = distributionFactorUpper;
         this.distributionFactorLower = distributionFactorLower;
         this.includeSchemaChanges = includeSchemaChanges;
+        this.scanNewlyAddedTableEnabled = scanNewlyAddedTableEnabled;
         this.dbzProperties = checkNotNull(dbzProperties);
         this.dbzConfiguration = Configuration.from(dbzProperties);
         this.dbzMySqlConfig = new MySqlConnectorConfig(dbzConfiguration);
+        this.jdbcProperties = jdbcProperties;
+        this.chunkKeyColumn = chunkKeyColumn;
     }
 
     public String getHostname() {
@@ -179,6 +186,10 @@ public class MySqlSourceConfig implements Serializable {
         return includeSchemaChanges;
     }
 
+    public boolean isScanNewlyAddedTableEnabled() {
+        return scanNewlyAddedTableEnabled;
+    }
+
     public Properties getDbzProperties() {
         return dbzProperties;
     }
@@ -193,5 +204,14 @@ public class MySqlSourceConfig implements Serializable {
 
     public RelationalTableFilters getTableFilters() {
         return dbzMySqlConfig.getTableFilters();
+    }
+
+    public Properties getJdbcProperties() {
+        return jdbcProperties;
+    }
+
+    @Nullable
+    public String getChunkKeyColumn() {
+        return chunkKeyColumn;
     }
 }

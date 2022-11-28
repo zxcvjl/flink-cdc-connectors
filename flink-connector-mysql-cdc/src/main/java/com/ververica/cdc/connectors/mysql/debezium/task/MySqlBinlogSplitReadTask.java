@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -37,7 +35,9 @@ import io.debezium.util.Clock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset.NO_STOPPING_OFFSET;
+import java.util.function.Predicate;
+
+import static com.ververica.cdc.connectors.mysql.source.offset.BinlogOffsetUtils.isNonStoppingOffset;
 import static com.ververica.cdc.connectors.mysql.source.utils.RecordUtils.getBinlogPosition;
 
 /**
@@ -48,50 +48,44 @@ public class MySqlBinlogSplitReadTask extends MySqlStreamingChangeEventSource {
 
     private static final Logger LOG = LoggerFactory.getLogger(MySqlBinlogSplitReadTask.class);
     private final MySqlBinlogSplit binlogSplit;
-    private final MySqlOffsetContext offsetContext;
     private final EventDispatcherImpl<TableId> eventDispatcher;
     private final SignalEventDispatcher signalEventDispatcher;
     private final ErrorHandler errorHandler;
+    private final Predicate<Event> eventFilter;
     private ChangeEventSourceContext context;
 
     public MySqlBinlogSplitReadTask(
             MySqlConnectorConfig connectorConfig,
-            MySqlOffsetContext offsetContext,
             MySqlConnection connection,
             EventDispatcherImpl<TableId> dispatcher,
+            SignalEventDispatcher signalEventDispatcher,
             ErrorHandler errorHandler,
             Clock clock,
             MySqlTaskContext taskContext,
             MySqlStreamingChangeEventSourceMetrics metrics,
-            String topic,
-            MySqlBinlogSplit binlogSplit) {
-        super(
-                connectorConfig,
-                offsetContext,
-                connection,
-                dispatcher,
-                errorHandler,
-                clock,
-                taskContext,
-                metrics);
+            MySqlBinlogSplit binlogSplit,
+            Predicate<Event> eventFilter) {
+        super(connectorConfig, connection, dispatcher, errorHandler, clock, taskContext, metrics);
         this.binlogSplit = binlogSplit;
         this.eventDispatcher = dispatcher;
-        this.offsetContext = offsetContext;
         this.errorHandler = errorHandler;
-        this.signalEventDispatcher =
-                new SignalEventDispatcher(
-                        offsetContext.getPartition(), topic, eventDispatcher.getQueue());
+        this.signalEventDispatcher = signalEventDispatcher;
+        this.eventFilter = eventFilter;
     }
 
     @Override
-    public void execute(ChangeEventSourceContext context) throws InterruptedException {
+    public void execute(ChangeEventSourceContext context, MySqlOffsetContext offsetContext)
+            throws InterruptedException {
         this.context = context;
-        super.execute(context);
+        super.execute(context, offsetContext);
     }
 
     @Override
-    protected void handleEvent(Event event) {
-        super.handleEvent(event);
+    protected void handleEvent(MySqlOffsetContext offsetContext, Event event) {
+        if (!eventFilter.test(event)) {
+            return;
+        }
+        super.handleEvent(offsetContext, event);
         // check do we need to stop for read binlog for snapshot split.
         if (isBoundedRead()) {
             final BinlogOffset currentBinlogOffset = getBinlogPosition(offsetContext.getOffset());
@@ -115,6 +109,6 @@ public class MySqlBinlogSplitReadTask extends MySqlStreamingChangeEventSource {
     }
 
     private boolean isBoundedRead() {
-        return !NO_STOPPING_OFFSET.equals(binlogSplit.getEndingOffset());
+        return !isNonStoppingOffset(binlogSplit.getEndingOffset());
     }
 }

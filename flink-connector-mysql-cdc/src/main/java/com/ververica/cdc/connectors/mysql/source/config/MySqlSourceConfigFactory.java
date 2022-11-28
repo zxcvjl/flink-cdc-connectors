@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -26,20 +24,21 @@ import com.ververica.cdc.connectors.mysql.table.StartupOptions;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
 
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND;
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CHUNK_META_GROUP_SIZE;
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CONNECTION_POOL_SIZE;
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CONNECT_MAX_RETRIES;
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.CONNECT_TIMEOUT;
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.HEARTBEAT_INTERVAL;
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE;
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
-import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SERVER_TIME_ZONE;
-import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND;
-import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /** A factory to construct {@link MySqlSourceConfig}. */
@@ -55,7 +54,7 @@ public class MySqlSourceConfigFactory implements Serializable {
     private ServerIdRange serverIdRange;
     private List<String> databaseList;
     private List<String> tableList;
-    private String serverTimeZone = SERVER_TIME_ZONE.defaultValue();
+    private String serverTimeZone = ZoneId.systemDefault().getId();
     private StartupOptions startupOptions = StartupOptions.initial();
     private int splitSize = SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue();
     private int splitMetaGroupSize = CHUNK_META_GROUP_SIZE.defaultValue();
@@ -64,11 +63,15 @@ public class MySqlSourceConfigFactory implements Serializable {
     private int connectMaxRetries = CONNECT_MAX_RETRIES.defaultValue();
     private int connectionPoolSize = CONNECTION_POOL_SIZE.defaultValue();
     private double distributionFactorUpper =
-            SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue();
+            CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.defaultValue();
     private double distributionFactorLower =
-            SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue();
+            CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.defaultValue();
     private boolean includeSchemaChanges = false;
+    private boolean scanNewlyAddedTableEnabled = false;
+    private Properties jdbcProperties;
+    private Duration heartbeatInterval = HEARTBEAT_INTERVAL.defaultValue();
     private Properties dbzProperties;
+    private String chunkKeyColumn;
 
     public MySqlSourceConfigFactory hostname(String hostname) {
         this.hostname = hostname;
@@ -139,6 +142,15 @@ public class MySqlSourceConfigFactory implements Serializable {
     }
 
     /**
+     * The chunk key of table snapshot, captured tables are split into multiple chunks by the chunk
+     * key column when read the snapshot of table.
+     */
+    public MySqlSourceConfigFactory chunkKeyColumn(String chunkKeyColumn) {
+        this.chunkKeyColumn = chunkKeyColumn;
+        return this;
+    }
+
+    /**
      * The split size (number of rows) of table snapshot, captured tables are split into multiple
      * splits when read the snapshot of table.
      */
@@ -148,8 +160,8 @@ public class MySqlSourceConfigFactory implements Serializable {
     }
 
     /**
-     * The group size of split meta, if the meta size exceeds the group size, the meta will be will
-     * be divided into multiple groups.
+     * The group size of split meta, if the meta size exceeds the group size, the meta will be
+     * divided into multiple groups.
      */
     public MySqlSourceConfigFactory splitMetaGroupSize(int splitMetaGroupSize) {
         this.splitMetaGroupSize = splitMetaGroupSize;
@@ -207,17 +219,26 @@ public class MySqlSourceConfigFactory implements Serializable {
         return this;
     }
 
+    /** Whether the {@link MySqlSource} should scan the newly added tables or not. */
+    public MySqlSourceConfigFactory scanNewlyAddedTableEnabled(boolean scanNewlyAddedTableEnabled) {
+        this.scanNewlyAddedTableEnabled = scanNewlyAddedTableEnabled;
+        return this;
+    }
+
+    /** Custom properties that will overwrite the default JDBC connection URL. */
+    public MySqlSourceConfigFactory jdbcProperties(Properties jdbcProperties) {
+        this.jdbcProperties = jdbcProperties;
+        return this;
+    }
+
     /** Specifies the startup options. */
     public MySqlSourceConfigFactory startupOptions(StartupOptions startupOptions) {
-        switch (startupOptions.startupMode) {
-            case INITIAL:
-            case LATEST_OFFSET:
-                break;
-            default:
-                throw new UnsupportedOperationException(
-                        "Unsupported startup mode: " + startupOptions.startupMode);
-        }
         this.startupOptions = startupOptions;
+        return this;
+    }
+
+    public MySqlSourceConfigFactory heartbeatInterval(Duration heartbeatInterval) {
+        this.heartbeatInterval = heartbeatInterval;
         return this;
     }
 
@@ -260,6 +281,7 @@ public class MySqlSourceConfigFactory implements Serializable {
         props.setProperty("offset.flush.interval.ms", String.valueOf(Long.MAX_VALUE));
         // disable tombstones
         props.setProperty("tombstones.on.delete", String.valueOf(false));
+        props.setProperty("heartbeat.interval.ms", String.valueOf(heartbeatInterval.toMillis()));
         // debezium use "long" mode to handle unsigned bigint by default,
         // but it'll cause lose of precise when the value is larger than 2^63,
         // so use "precise" mode to avoid it.
@@ -281,7 +303,11 @@ public class MySqlSourceConfigFactory implements Serializable {
 
         // override the user-defined debezium properties
         if (dbzProperties != null) {
-            dbzProperties.forEach(props::put);
+            props.putAll(dbzProperties);
+        }
+
+        if (jdbcProperties == null) {
+            jdbcProperties = new Properties();
         }
 
         return new MySqlSourceConfig(
@@ -303,6 +329,9 @@ public class MySqlSourceConfigFactory implements Serializable {
                 distributionFactorUpper,
                 distributionFactorLower,
                 includeSchemaChanges,
-                props);
+                scanNewlyAddedTableEnabled,
+                props,
+                jdbcProperties,
+                chunkKeyColumn);
     }
 }

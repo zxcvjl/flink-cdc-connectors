@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -24,8 +22,9 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.util.FlinkRuntimeException;
 
-import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
+import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
 
+import com.ververica.cdc.connectors.mysql.source.assigners.MySqlHybridSplitAssigner;
 import com.ververica.cdc.connectors.mysql.source.assigners.MySqlSplitAssigner;
 import com.ververica.cdc.connectors.mysql.source.assigners.state.PendingSplitsState;
 import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceConfig;
@@ -34,6 +33,11 @@ import com.ververica.cdc.connectors.mysql.source.events.BinlogSplitMetaRequestEv
 import com.ververica.cdc.connectors.mysql.source.events.FinishedSnapshotSplitsAckEvent;
 import com.ververica.cdc.connectors.mysql.source.events.FinishedSnapshotSplitsReportEvent;
 import com.ververica.cdc.connectors.mysql.source.events.FinishedSnapshotSplitsRequestEvent;
+import com.ververica.cdc.connectors.mysql.source.events.LatestFinishedSplitsSizeEvent;
+import com.ververica.cdc.connectors.mysql.source.events.LatestFinishedSplitsSizeRequestEvent;
+import com.ververica.cdc.connectors.mysql.source.events.SuspendBinlogReaderAckEvent;
+import com.ververica.cdc.connectors.mysql.source.events.SuspendBinlogReaderEvent;
+import com.ververica.cdc.connectors.mysql.source.events.WakeupReaderEvent;
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
 import com.ververica.cdc.connectors.mysql.source.split.FinishedSnapshotSplitInfo;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
@@ -49,6 +53,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
+
+import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isAssigning;
+import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isAssigningFinished;
+import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isSuspended;
 
 /**
  * A MySQL CDC source enumerator that enumerates receive the split request and assign the split to
@@ -66,6 +74,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
     // using TreeSet to prefer assigning binlog split to task-0 for easier debug
     private final TreeSet<Integer> readersAwaitingSplit;
     private List<List<FinishedSnapshotSplitInfo>> binlogSplitMeta;
+    private boolean binlogReaderIsSuspended = false;
 
     public MySqlSourceEnumerator(
             SplitEnumeratorContext<MySqlSplit> context,
@@ -75,11 +84,21 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
         this.sourceConfig = sourceConfig;
         this.splitAssigner = splitAssigner;
         this.readersAwaitingSplit = new TreeSet<>();
+
+        // when restored from state, if the split assigner is assigning snapshot
+        // splits or has already assigned all splits, send wakeup event to
+        // SourceReader, SourceReader can omit the event based on its own status.
+        if (isAssigning(splitAssigner.getAssignerStatus())
+                || isAssigningFinished(splitAssigner.getAssignerStatus())) {
+            binlogReaderIsSuspended = true;
+        }
     }
 
     @Override
     public void start() {
         splitAssigner.open();
+        suspendBinlogReaderIfNeed();
+        wakeupBinlogReaderIfNeed();
         this.context.callAsync(
                 this::getRegisteredReader,
                 this::syncWithReaders,
@@ -106,7 +125,11 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
 
     @Override
     public void addReader(int subtaskId) {
-        // do nothing
+        // send SuspendBinlogReaderEvent to source reader if the assigner's status is
+        // suspended
+        if (isSuspended(splitAssigner.getAssignerStatus())) {
+            context.sendEventToSourceReader(subtaskId, new SuspendBinlogReaderEvent());
+        }
     }
 
     @Override
@@ -119,7 +142,11 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
             FinishedSnapshotSplitsReportEvent reportEvent =
                     (FinishedSnapshotSplitsReportEvent) sourceEvent;
             Map<String, BinlogOffset> finishedOffsets = reportEvent.getFinishedOffsets();
+
             splitAssigner.onFinishedSplits(finishedOffsets);
+
+            wakeupBinlogReaderIfNeed();
+
             // send acknowledge event
             FinishedSnapshotSplitsAckEvent ackEvent =
                     new FinishedSnapshotSplitsAckEvent(new ArrayList<>(finishedOffsets.keySet()));
@@ -129,6 +156,13 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
                     "The enumerator receives request for binlog split meta from subtask {}.",
                     subtaskId);
             sendBinlogMeta(subtaskId, (BinlogSplitMetaRequestEvent) sourceEvent);
+        } else if (sourceEvent instanceof SuspendBinlogReaderAckEvent) {
+            LOG.info(
+                    "The enumerator receives event that the binlog split reader has been suspended from subtask {}. ",
+                    subtaskId);
+            handleSuspendBinlogReaderAckEvent(subtaskId);
+        } else if (sourceEvent instanceof LatestFinishedSplitsSizeRequestEvent) {
+            handleLatestFinishedSplitSizeRequest(subtaskId);
         }
     }
 
@@ -172,6 +206,7 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
                 LOG.info("Assign split {} to subtask {}", mySqlSplit, nextAwaiting);
             } else {
                 // there is no available splits by now, skip assigning
+                wakeupBinlogReaderIfNeed();
                 break;
             }
         }
@@ -195,6 +230,29 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
                 context.sendEventToSourceReader(
                         subtaskId, new FinishedSnapshotSplitsRequestEvent());
             }
+        }
+
+        suspendBinlogReaderIfNeed();
+        wakeupBinlogReaderIfNeed();
+    }
+
+    private void suspendBinlogReaderIfNeed() {
+        if (isSuspended(splitAssigner.getAssignerStatus())) {
+            for (int subtaskId : getRegisteredReader()) {
+                context.sendEventToSourceReader(subtaskId, new SuspendBinlogReaderEvent());
+            }
+            binlogReaderIsSuspended = true;
+        }
+    }
+
+    private void wakeupBinlogReaderIfNeed() {
+        if (isAssigningFinished(splitAssigner.getAssignerStatus()) && binlogReaderIsSuspended) {
+            for (int subtaskId : getRegisteredReader()) {
+                context.sendEventToSourceReader(
+                        subtaskId,
+                        new WakeupReaderEvent(WakeupReaderEvent.WakeUpTarget.BINLOG_READER));
+            }
+            binlogReaderIsSuspended = false;
         }
     }
 
@@ -227,9 +285,32 @@ public class MySqlSourceEnumerator implements SplitEnumerator<MySqlSplit, Pendin
             context.sendEventToSourceReader(subTask, metadataEvent);
         } else {
             LOG.error(
-                    "Received invalid request meta group id {}, the invalid meta group id range is [0, {}]",
+                    "Received invalid request meta group id {}, the valid meta group id range is [0, {}]",
                     requestMetaGroupId,
                     binlogSplitMeta.size() - 1);
+        }
+    }
+
+    private void handleSuspendBinlogReaderAckEvent(int subTask) {
+        LOG.info(
+                "Received event that the binlog split reader has been suspended from subtask {}. ",
+                subTask);
+        splitAssigner.wakeup();
+        if (splitAssigner instanceof MySqlHybridSplitAssigner) {
+            for (int subtaskId : this.getRegisteredReader()) {
+                context.sendEventToSourceReader(
+                        subtaskId,
+                        new WakeupReaderEvent(WakeupReaderEvent.WakeUpTarget.SNAPSHOT_READER));
+            }
+        }
+    }
+
+    private void handleLatestFinishedSplitSizeRequest(int subTask) {
+        if (splitAssigner instanceof MySqlHybridSplitAssigner) {
+            context.sendEventToSourceReader(
+                    subTask,
+                    new LatestFinishedSplitsSizeEvent(
+                            splitAssigner.getFinishedSplitInfos().size()));
         }
     }
 }

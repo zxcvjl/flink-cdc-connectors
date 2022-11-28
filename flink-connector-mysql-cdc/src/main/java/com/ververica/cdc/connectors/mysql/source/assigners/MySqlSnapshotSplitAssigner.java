@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -19,18 +17,24 @@
 package com.ververica.cdc.connectors.mysql.source.assigners;
 
 import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.util.Preconditions;
+
+import org.apache.flink.shaded.guava30.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils;
 import com.ververica.cdc.connectors.mysql.schema.MySqlSchema;
+import com.ververica.cdc.connectors.mysql.source.assigners.state.ChunkSplitterState;
 import com.ververica.cdc.connectors.mysql.source.assigners.state.SnapshotPendingSplitsState;
 import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceConfig;
 import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions;
 import com.ververica.cdc.connectors.mysql.source.offset.BinlogOffset;
 import com.ververica.cdc.connectors.mysql.source.split.FinishedSnapshotSplitInfo;
+import com.ververica.cdc.connectors.mysql.source.split.MySqlSchemalessSnapshotSplit;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSnapshotSplit;
 import com.ververica.cdc.connectors.mysql.source.split.MySqlSplit;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.relational.TableId;
+import io.debezium.relational.history.TableChanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,14 +45,20 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.stream.Collectors;
 
 import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.discoverCapturedTables;
 import static com.ververica.cdc.connectors.mysql.debezium.DebeziumUtils.openJdbcConnection;
+import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isAssigningFinished;
+import static com.ververica.cdc.connectors.mysql.source.assigners.AssignerStatus.isSuspended;
+import static com.ververica.cdc.connectors.mysql.source.assigners.state.ChunkSplitterState.NO_SPLITTING_TABLE_STATE;
 
 /**
  * A {@link MySqlSplitAssigner} that splits tables into small chunk splits based on primary key
@@ -60,18 +70,21 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
     private static final Logger LOG = LoggerFactory.getLogger(MySqlSnapshotSplitAssigner.class);
 
     private final List<TableId> alreadyProcessedTables;
-    private final List<MySqlSnapshotSplit> remainingSplits;
-    private final Map<String, MySqlSnapshotSplit> assignedSplits;
+    private final List<MySqlSchemalessSnapshotSplit> remainingSplits;
+    private final Map<String, MySqlSchemalessSnapshotSplit> assignedSplits;
+    private final Map<TableId, TableChanges.TableChange> tableSchemas;
     private final Map<String, BinlogOffset> splitFinishedOffsets;
-    private boolean assignerFinished;
-
     private final MySqlSourceConfig sourceConfig;
     private final int currentParallelism;
-    private final LinkedList<TableId> remainingTables;
+    private final List<TableId> remainingTables;
     private final boolean isRemainingTablesCheckpointed;
+    private final Object lock = new Object();
 
-    private ChunkSplitter chunkSplitter;
+    private volatile Throwable uncaughtSplitterException;
+    private AssignerStatus assignerStatus;
+    private MySqlChunkSplitter chunkSplitter;
     private boolean isTableIdCaseSensitive;
+    private ExecutorService executor;
 
     @Nullable private Long checkpointIdToFinish;
 
@@ -87,10 +100,12 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
                 new ArrayList<>(),
                 new HashMap<>(),
                 new HashMap<>(),
-                false,
+                new HashMap<>(),
+                AssignerStatus.INITIAL_ASSIGNING,
                 remainingTables,
                 isTableIdCaseSensitive,
-                true);
+                true,
+                NO_SPLITTING_TABLE_STATE);
     }
 
     public MySqlSnapshotSplitAssigner(
@@ -103,42 +118,70 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
                 checkpoint.getAlreadyProcessedTables(),
                 checkpoint.getRemainingSplits(),
                 checkpoint.getAssignedSplits(),
+                checkpoint.getTableSchemas(),
                 checkpoint.getSplitFinishedOffsets(),
-                checkpoint.isAssignerFinished(),
+                checkpoint.getSnapshotAssignerStatus(),
                 checkpoint.getRemainingTables(),
                 checkpoint.isTableIdCaseSensitive(),
-                checkpoint.isRemainingTablesCheckpointed());
+                checkpoint.isRemainingTablesCheckpointed(),
+                checkpoint.getChunkSplitterState());
     }
 
     private MySqlSnapshotSplitAssigner(
             MySqlSourceConfig sourceConfig,
             int currentParallelism,
             List<TableId> alreadyProcessedTables,
-            List<MySqlSnapshotSplit> remainingSplits,
-            Map<String, MySqlSnapshotSplit> assignedSplits,
+            List<MySqlSchemalessSnapshotSplit> remainingSplits,
+            Map<String, MySqlSchemalessSnapshotSplit> assignedSplits,
+            Map<TableId, TableChanges.TableChange> tableSchemas,
             Map<String, BinlogOffset> splitFinishedOffsets,
-            boolean assignerFinished,
+            AssignerStatus assignerStatus,
             List<TableId> remainingTables,
             boolean isTableIdCaseSensitive,
-            boolean isRemainingTablesCheckpointed) {
+            boolean isRemainingTablesCheckpointed,
+            ChunkSplitterState chunkSplitterState) {
         this.sourceConfig = sourceConfig;
         this.currentParallelism = currentParallelism;
         this.alreadyProcessedTables = alreadyProcessedTables;
-        this.remainingSplits = remainingSplits;
+        this.remainingSplits = new CopyOnWriteArrayList<>(remainingSplits);
         this.assignedSplits = assignedSplits;
+        this.tableSchemas = tableSchemas;
         this.splitFinishedOffsets = splitFinishedOffsets;
-        this.assignerFinished = assignerFinished;
-        this.remainingTables = new LinkedList<>(remainingTables);
+        this.assignerStatus = assignerStatus;
+        this.remainingTables = new CopyOnWriteArrayList<>(remainingTables);
         this.isRemainingTablesCheckpointed = isRemainingTablesCheckpointed;
         this.isTableIdCaseSensitive = isTableIdCaseSensitive;
+        this.chunkSplitter =
+                createChunkSplitter(sourceConfig, isTableIdCaseSensitive, chunkSplitterState);
     }
 
     @Override
     public void open() {
-        chunkSplitter = createChunkSplitter(sourceConfig, isTableIdCaseSensitive);
+        chunkSplitter.open();
+        discoveryCaptureTables();
+        captureNewlyAddedTables();
+        startAsynchronouslySplit();
+    }
 
-        // the legacy state didn't snapshot remaining tables, discovery remaining table here
-        if (!isRemainingTablesCheckpointed && !assignerFinished) {
+    private void discoveryCaptureTables() {
+        // discovery the tables lazily
+        if (needToDiscoveryTables()) {
+            long start = System.currentTimeMillis();
+            LOG.debug("The remainingTables is empty, start to discovery tables");
+            try (JdbcConnection jdbc = openJdbcConnection(sourceConfig)) {
+                final List<TableId> discoverTables = discoverCapturedTables(jdbc, sourceConfig);
+                this.remainingTables.addAll(discoverTables);
+                this.isTableIdCaseSensitive = DebeziumUtils.isTableIdCaseSensitive(jdbc);
+            } catch (Exception e) {
+                throw new FlinkRuntimeException("Failed to discovery tables to capture", e);
+            }
+            LOG.debug(
+                    "Discovery tables success, time cost: {} ms.",
+                    System.currentTimeMillis() - start);
+        }
+        // when restore the job from legacy savepoint, the legacy state may haven't snapshot
+        // remaining tables, discovery remaining table here
+        else if (!isRemainingTablesCheckpointed && !isAssigningFinished(assignerStatus)) {
             try (JdbcConnection jdbc = openJdbcConnection(sourceConfig)) {
                 final List<TableId> discoverTables = discoverCapturedTables(jdbc, sourceConfig);
                 discoverTables.removeAll(alreadyProcessedTables);
@@ -151,25 +194,110 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
         }
     }
 
+    private void captureNewlyAddedTables() {
+        if (sourceConfig.isScanNewlyAddedTableEnabled()) {
+            // check whether we got newly added tables
+            try (JdbcConnection jdbc = openJdbcConnection(sourceConfig)) {
+                final List<TableId> newlyAddedTables = discoverCapturedTables(jdbc, sourceConfig);
+                newlyAddedTables.removeAll(alreadyProcessedTables);
+                newlyAddedTables.removeAll(remainingTables);
+                if (!newlyAddedTables.isEmpty()) {
+                    // if job is still in snapshot reading phase, directly add all newly added
+                    // tables
+                    LOG.info("Found newly added tables, start capture newly added tables process");
+                    remainingTables.addAll(newlyAddedTables);
+                    if (isAssigningFinished(assignerStatus)) {
+                        // start the newly added tables process under binlog reading phase
+                        LOG.info(
+                                "Found newly added tables, start capture newly added tables process under binlog reading phase");
+                        this.suspend();
+                    }
+                }
+            } catch (Exception e) {
+                throw new FlinkRuntimeException(
+                        "Failed to discover remaining tables to capture", e);
+            }
+        }
+    }
+
+    private void startAsynchronouslySplit() {
+        if (chunkSplitter.hasNextChunk() || !remainingTables.isEmpty()) {
+            if (executor == null) {
+                ThreadFactory threadFactory =
+                        new ThreadFactoryBuilder().setNameFormat("snapshot-splitting").build();
+                this.executor = Executors.newSingleThreadExecutor(threadFactory);
+            }
+            executor.submit(this::splitChunksForRemainingTables);
+        }
+    }
+
+    private void splitTable(TableId nextTable) {
+        LOG.info("Start splitting table {} into chunks...", nextTable);
+        long start = System.currentTimeMillis();
+        int chunkNum = 0;
+        boolean hasRecordSchema = false;
+        // split the given table into chunks (snapshot splits)
+        do {
+            synchronized (lock) {
+                List<MySqlSnapshotSplit> splits;
+                try {
+                    splits = chunkSplitter.splitChunks(nextTable);
+                } catch (Exception e) {
+                    throw new IllegalStateException(
+                            "Error when splitting chunks for " + nextTable, e);
+                }
+
+                if (!hasRecordSchema && !splits.isEmpty()) {
+                    hasRecordSchema = true;
+                    final Map<TableId, TableChanges.TableChange> tableSchema = new HashMap<>();
+                    tableSchema.putAll(splits.iterator().next().getTableSchemas());
+                    tableSchemas.putAll(tableSchema);
+                }
+                final List<MySqlSchemalessSnapshotSplit> schemaLessSnapshotSplits =
+                        splits.stream()
+                                .map(MySqlSnapshotSplit::toSchemalessSnapshotSplit)
+                                .collect(Collectors.toList());
+                chunkNum += splits.size();
+                remainingSplits.addAll(schemaLessSnapshotSplits);
+                if (!chunkSplitter.hasNextChunk()) {
+                    remainingTables.remove(nextTable);
+                }
+                lock.notify();
+            }
+        } while (chunkSplitter.hasNextChunk());
+        long end = System.currentTimeMillis();
+        LOG.info(
+                "Split table {} into {} chunks, time cost: {}ms.",
+                nextTable,
+                chunkNum,
+                end - start);
+    }
+
     @Override
     public Optional<MySqlSplit> getNext() {
-        if (!remainingSplits.isEmpty()) {
-            // return remaining splits firstly
-            Iterator<MySqlSnapshotSplit> iterator = remainingSplits.iterator();
-            MySqlSnapshotSplit split = iterator.next();
-            iterator.remove();
-            assignedSplits.put(split.splitId(), split);
-            return Optional.of(split);
-        } else {
-            // it's turn for new table
-            TableId nextTable = remainingTables.pollFirst();
-            if (nextTable != null) {
-                // split the given table into chunks (snapshot splits)
-                Collection<MySqlSnapshotSplit> splits = chunkSplitter.generateSplits(nextTable);
-                remainingSplits.addAll(splits);
-                alreadyProcessedTables.add(nextTable);
+        checkSplitterErrors();
+        waitTableDiscoveryReady();
+        synchronized (lock) {
+            if (!remainingSplits.isEmpty()) {
+                // return remaining splits firstly
+                Iterator<MySqlSchemalessSnapshotSplit> iterator = remainingSplits.iterator();
+                MySqlSchemalessSnapshotSplit split = iterator.next();
+                remainingSplits.remove(split);
+                assignedSplits.put(split.splitId(), split);
+                addAlreadyProcessedTablesIfNotExists(split.getTableId());
+                return Optional.of(
+                        split.toMySqlSnapshotSplit(tableSchemas.get(split.getTableId())));
+            } else if (!remainingTables.isEmpty()) {
+                try {
+                    // wait for the asynchronous split to complete
+                    lock.wait();
+                } catch (InterruptedException e) {
+                    throw new FlinkRuntimeException(
+                            "InterruptedException while waiting for asynchronously snapshot split");
+                }
                 return getNext();
             } else {
+                closeExecutorService();
                 return Optional.empty();
             }
         }
@@ -188,12 +316,12 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
             throw new FlinkRuntimeException(
                     "The assigner is not ready to offer finished split information, this should not be called");
         }
-        final List<MySqlSnapshotSplit> assignedSnapshotSplit =
+        final List<MySqlSchemalessSnapshotSplit> assignedSnapshotSplit =
                 assignedSplits.values().stream()
                         .sorted(Comparator.comparing(MySqlSplit::splitId))
                         .collect(Collectors.toList());
         List<FinishedSnapshotSplitInfo> finishedSnapshotSplitInfos = new ArrayList<>();
-        for (MySqlSnapshotSplit split : assignedSnapshotSplit) {
+        for (MySqlSchemalessSnapshotSplit split : assignedSnapshotSplit) {
             BinlogOffset binlogOffset = splitFinishedOffsets.get(split.splitId());
             finishedSnapshotSplitInfos.add(
                     new FinishedSnapshotSplitInfo(
@@ -209,14 +337,13 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
     @Override
     public void onFinishedSplits(Map<String, BinlogOffset> splitFinishedOffsets) {
         this.splitFinishedOffsets.putAll(splitFinishedOffsets);
-        if (allSplitsFinished()) {
+        if (allSplitsFinished() && AssignerStatus.isAssigning(assignerStatus)) {
             // Skip the waiting checkpoint when current parallelism is 1 which means we do not need
             // to care about the global output data order of snapshot splits and binlog split.
             if (currentParallelism == 1) {
-                assignerFinished = true;
+                assignerStatus = assignerStatus.onFinish();
                 LOG.info(
                         "Snapshot split assigner received all splits finished and the job parallelism is 1, snapshot split assigner is turn into finished status.");
-
             } else {
                 LOG.info(
                         "Snapshot split assigner received all splits finished, waiting for a complete checkpoint to mark the assigner finished.");
@@ -227,7 +354,8 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
     @Override
     public void addSplits(Collection<MySqlSplit> splits) {
         for (MySqlSplit split : splits) {
-            remainingSplits.add(split.asSnapshotSplit());
+            tableSchemas.putAll(split.asSnapshotSplit().getTableSchemas());
+            remainingSplits.add(split.asSnapshotSplit().toSchemalessSnapshotSplit());
             // we should remove the add-backed splits from the assigned list,
             // because they are failed
             assignedSplits.remove(split.splitId());
@@ -242,14 +370,19 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
                         alreadyProcessedTables,
                         remainingSplits,
                         assignedSplits,
+                        tableSchemas,
                         splitFinishedOffsets,
-                        assignerFinished,
+                        assignerStatus,
                         remainingTables,
                         isTableIdCaseSensitive,
-                        true);
-        // we need a complete checkpoint before mark this assigner to be finished, to wait for all
+                        true,
+                        chunkSplitter.snapshotState(checkpointId));
+        // we need a complete checkpoint before mark this assigner to be finished, to wait for
+        // all
         // records of snapshot splits are completely processed
-        if (checkpointIdToFinish == null && !assignerFinished && allSplitsFinished()) {
+        if (checkpointIdToFinish == null
+                && !isAssigningFinished(assignerStatus)
+                && allSplitsFinished()) {
             checkpointIdToFinish = checkpointId;
         }
         return state;
@@ -259,30 +392,88 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
     public void notifyCheckpointComplete(long checkpointId) {
         // we have waited for at-least one complete checkpoint after all snapshot-splits are
         // finished, then we can mark snapshot assigner as finished.
-        if (checkpointIdToFinish != null && !assignerFinished && allSplitsFinished()) {
-            assignerFinished = checkpointId >= checkpointIdToFinish;
+        if (checkpointIdToFinish != null
+                && !isAssigningFinished(assignerStatus)
+                && allSplitsFinished()) {
+            if (checkpointId >= checkpointIdToFinish) {
+                assignerStatus = assignerStatus.onFinish();
+            }
             LOG.info("Snapshot split assigner is turn into finished status.");
         }
     }
 
     @Override
-    public void close() {}
+    public AssignerStatus getAssignerStatus() {
+        return assignerStatus;
+    }
+
+    @Override
+    public void suspend() {
+        Preconditions.checkState(
+                isAssigningFinished(assignerStatus), "Invalid assigner status {}", assignerStatus);
+        assignerStatus = assignerStatus.suspend();
+    }
+
+    @Override
+    public void wakeup() {
+        Preconditions.checkState(
+                isSuspended(assignerStatus), "Invalid assigner status {}", assignerStatus);
+        assignerStatus = assignerStatus.wakeup();
+    }
+
+    @Override
+    public void close() {
+        closeExecutorService();
+        if (chunkSplitter != null) {
+            try {
+                chunkSplitter.close();
+            } catch (Exception e) {
+                LOG.warn("Fail to close the chunk splitter.");
+            }
+        }
+    }
+
+    private void closeExecutorService() {
+        if (executor != null) {
+            executor.shutdown();
+        }
+    }
+
+    private void addAlreadyProcessedTablesIfNotExists(TableId tableId) {
+        if (!alreadyProcessedTables.contains(tableId)) {
+            alreadyProcessedTables.add(tableId);
+        }
+    }
+
+    private void waitTableDiscoveryReady() {
+        while (needToDiscoveryTables()) {
+            LOG.debug("Current assigner is discovering tables, wait tables ready...");
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                // nothing to do
+            }
+        }
+    }
 
     /** Indicates there is no more splits available in this assigner. */
     public boolean noMoreSplits() {
-        return remainingTables.isEmpty() && remainingSplits.isEmpty();
+        return !needToDiscoveryTables() && remainingTables.isEmpty() && remainingSplits.isEmpty();
     }
 
-    /**
-     * Returns whether the snapshot split assigner is finished, which indicates there is no more
-     * splits and all records of splits have been completely processed in the pipeline.
-     */
-    public boolean isFinished() {
-        return assignerFinished;
+    /** Indicates current assigner need to discovery tables or not. */
+    public boolean needToDiscoveryTables() {
+        return remainingTables.isEmpty()
+                && remainingSplits.isEmpty()
+                && alreadyProcessedTables.isEmpty();
     }
 
-    public Map<String, MySqlSnapshotSplit> getAssignedSplits() {
+    public Map<String, MySqlSchemalessSnapshotSplit> getAssignedSplits() {
         return assignedSplits;
+    }
+
+    public Map<TableId, TableChanges.TableChange> getTableSchemas() {
+        return tableSchemas;
     }
 
     public Map<String, BinlogOffset> getSplitFinishedOffsets() {
@@ -299,9 +490,48 @@ public class MySqlSnapshotSplitAssigner implements MySqlSplitAssigner {
         return noMoreSplits() && assignedSplits.size() == splitFinishedOffsets.size();
     }
 
-    private static ChunkSplitter createChunkSplitter(
-            MySqlSourceConfig sourceConfig, boolean isTableIdCaseSensitive) {
+    private void splitChunksForRemainingTables() {
+        try {
+            // restore from a checkpoint and start to split the table from the previous checkpoint
+            if (chunkSplitter.hasNextChunk()) {
+                LOG.info(
+                        "Start splitting remaining chunks for table {}",
+                        chunkSplitter.getCurrentSplittingTableId());
+                splitTable(chunkSplitter.getCurrentSplittingTableId());
+            }
+
+            // split the remaining tables
+            for (TableId nextTable : remainingTables) {
+                splitTable(nextTable);
+            }
+        } catch (Throwable e) {
+            if (uncaughtSplitterException == null) {
+                uncaughtSplitterException = e;
+            } else {
+                uncaughtSplitterException.addSuppressed(e);
+            }
+            // Release the potential waiting getNext() call
+            synchronized (lock) {
+                lock.notify();
+            }
+        }
+    }
+
+    private void checkSplitterErrors() {
+        if (uncaughtSplitterException != null) {
+            throw new FlinkRuntimeException(
+                    "Chunk splitting has encountered exception", uncaughtSplitterException);
+        }
+    }
+
+    private static MySqlChunkSplitter createChunkSplitter(
+            MySqlSourceConfig sourceConfig,
+            boolean isTableIdCaseSensitive,
+            ChunkSplitterState chunkSplitterState) {
         MySqlSchema mySqlSchema = new MySqlSchema(sourceConfig, isTableIdCaseSensitive);
-        return new ChunkSplitter(mySqlSchema, sourceConfig);
+        if (!NO_SPLITTING_TABLE_STATE.equals(chunkSplitterState)) {
+            return new MySqlChunkSplitter(mySqlSchema, sourceConfig, chunkSplitterState);
+        }
+        return new MySqlChunkSplitter(mySqlSchema, sourceConfig);
     }
 }

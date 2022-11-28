@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -35,7 +33,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * <pre>{@code
  * MySqlSource
- *     .<RowData>builder()
+ *     .<String>builder()
  *     .hostname("localhost")
  *     .port(3306)
  *     .databaseList("mydb")
@@ -122,6 +120,15 @@ public class MySqlSourceBuilder<T> {
     }
 
     /**
+     * The chunk key of table snapshot, captured tables are split into multiple chunks by the chunk
+     * key column when read the snapshot of table.
+     */
+    public MySqlSourceBuilder<T> chunkKeyColumn(String chunkKeyColumn) {
+        this.configFactory.chunkKeyColumn(chunkKeyColumn);
+        return this;
+    }
+
+    /**
      * The split size (number of rows) of table snapshot, captured tables are split into multiple
      * splits when read the snapshot of table.
      */
@@ -131,8 +138,8 @@ public class MySqlSourceBuilder<T> {
     }
 
     /**
-     * The group size of split meta, if the meta size exceeds the group size, the meta will be will
-     * be divided into multiple groups.
+     * The group size of split meta, if the meta size exceeds the group size, the meta will be
+     * divided into multiple groups.
      */
     public MySqlSourceBuilder<T> splitMetaGroupSize(int splitMetaGroupSize) {
         this.configFactory.splitMetaGroupSize(splitMetaGroupSize);
@@ -190,9 +197,21 @@ public class MySqlSourceBuilder<T> {
         return this;
     }
 
+    /** Whether the {@link MySqlSource} should scan the newly added tables or not. */
+    public MySqlSourceBuilder<T> scanNewlyAddedTableEnabled(boolean scanNewlyAddedTableEnabled) {
+        this.configFactory.scanNewlyAddedTableEnabled(scanNewlyAddedTableEnabled);
+        return this;
+    }
+
     /** Specifies the startup options. */
     public MySqlSourceBuilder<T> startupOptions(StartupOptions startupOptions) {
         this.configFactory.startupOptions(startupOptions);
+        return this;
+    }
+
+    /** Custom properties that will overwrite the default JDBC connection URL. */
+    public MySqlSourceBuilder<T> jdbcProperties(Properties jdbcProperties) {
+        this.configFactory.jdbcProperties(jdbcProperties);
         return this;
     }
 
@@ -208,6 +227,12 @@ public class MySqlSourceBuilder<T> {
      */
     public MySqlSourceBuilder<T> deserializer(DebeziumDeserializationSchema<T> deserializer) {
         this.deserializer = deserializer;
+        return this;
+    }
+
+    /** The interval of heartbeat event. */
+    public MySqlSourceBuilder<T> heartbeatInterval(Duration heartbeatInterval) {
+        this.configFactory.heartbeatInterval(heartbeatInterval);
         return this;
     }
 

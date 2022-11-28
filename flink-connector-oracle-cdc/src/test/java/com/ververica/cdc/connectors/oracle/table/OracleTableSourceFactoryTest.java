@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -21,6 +19,7 @@ package com.ververica.cdc.connectors.oracle.table;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -30,11 +29,14 @@ import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
-import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.util.ExceptionUtils;
 
+import com.ververica.cdc.connectors.base.options.JdbcSourceOptions;
+import com.ververica.cdc.connectors.base.options.SourceOptions;
+import com.ververica.cdc.connectors.base.options.StartupOptions;
 import org.junit.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -42,7 +44,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import static org.apache.flink.table.api.TableSchema.fromResolvedSchema;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -78,6 +79,7 @@ public class OracleTableSourceFactoryTest {
                     Collections.emptyList(),
                     UniqueConstraint.primaryKey("pk", Collections.singletonList("id")));
 
+    private static final int MY_PORT = 1521;
     private static final String MY_LOCALHOST = "localhost";
     private static final String MY_USERNAME = "flinkuser";
     private static final String MY_PASSWORD = "flinkpw";
@@ -87,15 +89,16 @@ public class OracleTableSourceFactoryTest {
     private static final Properties PROPERTIES = new Properties();
 
     @Test
-    public void testCommonProperties() {
-        Map<String, String> properties = getAllOptions();
+    public void testRequiredProperties() {
+        Map<String, String> properties = getAllRequiredOptions();
 
         // validation for source
         DynamicTableSource actualSource = createTableSource(properties);
         OracleTableSource expectedSource =
                 new OracleTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
-                        1521,
+                        SCHEMA,
+                        null,
+                        MY_PORT,
                         MY_LOCALHOST,
                         MY_DATABASE,
                         MY_TABLE,
@@ -103,14 +106,61 @@ public class OracleTableSourceFactoryTest {
                         MY_USERNAME,
                         MY_PASSWORD,
                         PROPERTIES,
-                        StartupOptions.initial());
+                        StartupOptions.initial(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        SourceOptions.CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        JdbcSourceOptions.CONNECT_TIMEOUT.defaultValue(),
+                        JdbcSourceOptions.CONNECT_MAX_RETRIES.defaultValue(),
+                        JdbcSourceOptions.CONNECTION_POOL_SIZE.defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND
+                                .defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND
+                                .defaultValue(),
+                        null);
+        assertEquals(expectedSource, actualSource);
+    }
+
+    @Test
+    public void testCommonProperties() {
+        Map<String, String> properties = getAllRequiredOptionsWithHost();
+
+        // validation for source
+        DynamicTableSource actualSource = createTableSource(properties);
+        OracleTableSource expectedSource =
+                new OracleTableSource(
+                        SCHEMA,
+                        null,
+                        MY_PORT,
+                        MY_LOCALHOST,
+                        MY_DATABASE,
+                        MY_TABLE,
+                        MY_SCHEMA,
+                        MY_USERNAME,
+                        MY_PASSWORD,
+                        PROPERTIES,
+                        StartupOptions.initial(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        SourceOptions.CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        JdbcSourceOptions.CONNECT_TIMEOUT.defaultValue(),
+                        JdbcSourceOptions.CONNECT_MAX_RETRIES.defaultValue(),
+                        JdbcSourceOptions.CONNECTION_POOL_SIZE.defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND
+                                .defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND
+                                .defaultValue(),
+                        null);
         assertEquals(expectedSource, actualSource);
     }
 
     @Test
     public void testOptionalProperties() {
-        Map<String, String> options = getAllOptions();
+        Map<String, String> options = getAllRequiredOptions();
         options.put("port", "1521");
+        options.put("hostname", MY_LOCALHOST);
         options.put("debezium.snapshot.mode", "initial");
 
         DynamicTableSource actualSource = createTableSource(options);
@@ -118,8 +168,9 @@ public class OracleTableSourceFactoryTest {
         dbzProperties.put("snapshot.mode", "initial");
         OracleTableSource expectedSource =
                 new OracleTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
-                        1521,
+                        SCHEMA,
+                        null,
+                        MY_PORT,
                         MY_LOCALHOST,
                         MY_DATABASE,
                         MY_TABLE,
@@ -127,21 +178,95 @@ public class OracleTableSourceFactoryTest {
                         MY_USERNAME,
                         MY_PASSWORD,
                         dbzProperties,
-                        StartupOptions.initial());
+                        StartupOptions.initial(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        SourceOptions.CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        JdbcSourceOptions.CONNECT_TIMEOUT.defaultValue(),
+                        JdbcSourceOptions.CONNECT_MAX_RETRIES.defaultValue(),
+                        JdbcSourceOptions.CONNECTION_POOL_SIZE.defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND
+                                .defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND
+                                .defaultValue(),
+                        null);
+        assertEquals(expectedSource, actualSource);
+    }
+
+    @Test
+    public void testScanIncrementalProperties() {
+        Map<String, String> options = getAllRequiredOptions();
+        int chunkSize = 4096;
+        int splitMetaGroupSize = 2048;
+        int fetchSize = 1024;
+        Duration connectTimeout = Duration.ofSeconds(60);
+        int connectMaxRetry = 5;
+        int connectPoolSize = 10;
+        double distributionFactorUpper = 40.5;
+        double distributionFactorLower = 0.01;
+        options.put("port", "1521");
+        options.put("hostname", MY_LOCALHOST);
+        options.put("debezium.snapshot.mode", "initial");
+        options.put(SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.key(), "true");
+        options.put(
+                SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key(),
+                String.valueOf(chunkSize));
+        options.put(SourceOptions.CHUNK_META_GROUP_SIZE.key(), String.valueOf(splitMetaGroupSize));
+        options.put(SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.key(), String.valueOf(fetchSize));
+        options.put(
+                JdbcSourceOptions.CONNECT_TIMEOUT.key(),
+                String.format("%ds", connectTimeout.getSeconds()));
+        options.put(JdbcSourceOptions.CONNECT_MAX_RETRIES.key(), String.valueOf(connectMaxRetry));
+        options.put(JdbcSourceOptions.CONNECTION_POOL_SIZE.key(), String.valueOf(connectPoolSize));
+        options.put(
+                JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.key(),
+                String.valueOf(distributionFactorUpper));
+        options.put(
+                JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.key(),
+                String.valueOf(distributionFactorLower));
+
+        DynamicTableSource actualSource = createTableSource(options);
+        Properties dbzProperties = new Properties();
+        dbzProperties.put("snapshot.mode", "initial");
+        OracleTableSource expectedSource =
+                new OracleTableSource(
+                        SCHEMA,
+                        null,
+                        MY_PORT,
+                        MY_LOCALHOST,
+                        MY_DATABASE,
+                        MY_TABLE,
+                        MY_SCHEMA,
+                        MY_USERNAME,
+                        MY_PASSWORD,
+                        dbzProperties,
+                        StartupOptions.initial(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        chunkSize,
+                        splitMetaGroupSize,
+                        fetchSize,
+                        connectTimeout,
+                        connectMaxRetry,
+                        connectPoolSize,
+                        distributionFactorUpper,
+                        distributionFactorLower,
+                        null);
         assertEquals(expectedSource, actualSource);
     }
 
     @Test
     public void testStartupFromInitial() {
-        Map<String, String> properties = getAllOptions();
+        Map<String, String> properties = getAllRequiredOptionsWithHost();
         properties.put("scan.startup.mode", "initial");
 
         // validation for source
         DynamicTableSource actualSource = createTableSource(properties);
         OracleTableSource expectedSource =
                 new OracleTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
-                        1521,
+                        SCHEMA,
+                        null,
+                        MY_PORT,
                         MY_LOCALHOST,
                         MY_DATABASE,
                         MY_TABLE,
@@ -149,21 +274,34 @@ public class OracleTableSourceFactoryTest {
                         MY_USERNAME,
                         MY_PASSWORD,
                         PROPERTIES,
-                        StartupOptions.initial());
+                        StartupOptions.initial(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        SourceOptions.CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        JdbcSourceOptions.CONNECT_TIMEOUT.defaultValue(),
+                        JdbcSourceOptions.CONNECT_MAX_RETRIES.defaultValue(),
+                        JdbcSourceOptions.CONNECTION_POOL_SIZE.defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND
+                                .defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND
+                                .defaultValue(),
+                        null);
         assertEquals(expectedSource, actualSource);
     }
 
     @Test
     public void testStartupFromLatestOffset() {
-        Map<String, String> properties = getAllOptions();
+        Map<String, String> properties = getAllRequiredOptionsWithHost();
         properties.put("scan.startup.mode", "latest-offset");
 
         // validation for source
         DynamicTableSource actualSource = createTableSource(properties);
         OracleTableSource expectedSource =
                 new OracleTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
-                        1521,
+                        SCHEMA,
+                        null,
+                        MY_PORT,
                         MY_LOCALHOST,
                         MY_DATABASE,
                         MY_TABLE,
@@ -171,13 +309,25 @@ public class OracleTableSourceFactoryTest {
                         MY_USERNAME,
                         MY_PASSWORD,
                         PROPERTIES,
-                        StartupOptions.latest());
+                        StartupOptions.latest(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        SourceOptions.CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        JdbcSourceOptions.CONNECT_TIMEOUT.defaultValue(),
+                        JdbcSourceOptions.CONNECT_MAX_RETRIES.defaultValue(),
+                        JdbcSourceOptions.CONNECTION_POOL_SIZE.defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND
+                                .defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND
+                                .defaultValue(),
+                        null);
         assertEquals(expectedSource, actualSource);
     }
 
     @Test
     public void testMetadataColumns() {
-        Map<String, String> properties = getAllOptions();
+        Map<String, String> properties = getAllRequiredOptions();
 
         // validation for source
         DynamicTableSource actualSource = createTableSource(SCHEMA_WITH_METADATA, properties);
@@ -188,9 +338,9 @@ public class OracleTableSourceFactoryTest {
         actualSource = oracleTableSource.copy();
         OracleTableSource expectedSource =
                 new OracleTableSource(
-                        TableSchemaUtils.getPhysicalSchema(
-                                fromResolvedSchema(SCHEMA_WITH_METADATA)),
-                        1521,
+                        SCHEMA_WITH_METADATA,
+                        null,
+                        MY_PORT,
                         MY_LOCALHOST,
                         MY_DATABASE,
                         MY_TABLE,
@@ -198,7 +348,19 @@ public class OracleTableSourceFactoryTest {
                         MY_USERNAME,
                         MY_PASSWORD,
                         new Properties(),
-                        StartupOptions.initial());
+                        StartupOptions.initial(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_ENABLED.defaultValue(),
+                        SourceOptions.SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.defaultValue(),
+                        SourceOptions.CHUNK_META_GROUP_SIZE.defaultValue(),
+                        SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE.defaultValue(),
+                        JdbcSourceOptions.CONNECT_TIMEOUT.defaultValue(),
+                        JdbcSourceOptions.CONNECT_MAX_RETRIES.defaultValue(),
+                        JdbcSourceOptions.CONNECTION_POOL_SIZE.defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND
+                                .defaultValue(),
+                        JdbcSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND
+                                .defaultValue(),
+                        null);
         expectedSource.producedDataType = SCHEMA_WITH_METADATA.toSourceRowDataType();
         expectedSource.metadataKeys =
                 Arrays.asList("op_ts", "database_name", "table_name", "schema_name");
@@ -210,7 +372,7 @@ public class OracleTableSourceFactoryTest {
     public void testValidation() {
         // validate illegal port
         try {
-            Map<String, String> properties = getAllOptions();
+            Map<String, String> properties = getAllRequiredOptionsWithHost();
             properties.put("port", "123b");
 
             createTableSource(properties);
@@ -225,7 +387,7 @@ public class OracleTableSourceFactoryTest {
         // validate missing required
         Factory factory = new OracleTableSourceFactory();
         for (ConfigOption<?> requiredOption : factory.requiredOptions()) {
-            Map<String, String> properties = getAllOptions();
+            Map<String, String> properties = getAllRequiredOptionsWithHost();
             properties.remove(requiredOption.key());
 
             try {
@@ -242,7 +404,7 @@ public class OracleTableSourceFactoryTest {
 
         // validate unsupported option
         try {
-            Map<String, String> properties = getAllOptions();
+            Map<String, String> properties = getAllRequiredOptionsWithHost();
             properties.put("unknown", "abc");
 
             createTableSource(properties);
@@ -255,7 +417,7 @@ public class OracleTableSourceFactoryTest {
 
         // validate unsupported option
         try {
-            Map<String, String> properties = getAllOptions();
+            Map<String, String> properties = getAllRequiredOptionsWithHost();
             properties.put("scan.startup.mode", "abc");
 
             createTableSource(properties);
@@ -270,15 +432,22 @@ public class OracleTableSourceFactoryTest {
         }
     }
 
-    private Map<String, String> getAllOptions() {
+    private Map<String, String> getAllRequiredOptions() {
         Map<String, String> options = new HashMap<>();
         options.put("connector", "oracle-cdc");
+        options.put("port", "1521");
         options.put("hostname", MY_LOCALHOST);
         options.put("database-name", MY_DATABASE);
         options.put("table-name", MY_TABLE);
         options.put("username", MY_USERNAME);
         options.put("password", MY_PASSWORD);
         options.put("schema-name", MY_SCHEMA);
+        return options;
+    }
+
+    private Map<String, String> getAllRequiredOptionsWithHost() {
+        Map<String, String> options = getAllRequiredOptions();
+        options.put("hostname", MY_LOCALHOST);
         return options;
     }
 
@@ -293,7 +462,7 @@ public class OracleTableSourceFactoryTest {
                 ObjectIdentifier.of("default", "default", "t1"),
                 new ResolvedCatalogTable(
                         CatalogTable.of(
-                                fromResolvedSchema(schema).toSchema(),
+                                Schema.newBuilder().fromResolvedSchema(schema).build(),
                                 "mock source",
                                 new ArrayList<>(),
                                 options),

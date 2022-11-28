@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -21,6 +19,7 @@ package com.ververica.cdc.connectors.postgres.table;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -28,11 +27,17 @@ import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.SourceFunctionProvider;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
-import org.apache.flink.table.utils.TableSchemaUtils;
+import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.util.ExceptionUtils;
 
+import com.ververica.cdc.debezium.DebeziumSourceFunction;
+import com.ververica.cdc.debezium.table.DebeziumChangelogMode;
+import com.ververica.cdc.debezium.utils.ResolvedSchemaUtils;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -42,7 +47,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import static org.apache.flink.table.api.TableSchema.fromResolvedSchema;
+import static com.ververica.cdc.connectors.utils.AssertUtils.assertProducedTypeOfSourceFunction;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -60,6 +65,17 @@ public class PostgreSQLTableFactoryTest {
                             Column.physical("eee", DataTypes.TIMESTAMP(3))),
                     new ArrayList<>(),
                     UniqueConstraint.primaryKey("pk", Arrays.asList("bbb", "aaa")));
+
+    private static final ResolvedSchema SCHEMA_WITHOUT_PRIMARY_KEY =
+            new ResolvedSchema(
+                    Arrays.asList(
+                            Column.physical("aaa", DataTypes.INT().notNull()),
+                            Column.physical("bbb", DataTypes.STRING().notNull()),
+                            Column.physical("ccc", DataTypes.DOUBLE()),
+                            Column.physical("ddd", DataTypes.DECIMAL(31, 18)),
+                            Column.physical("eee", DataTypes.TIMESTAMP(3))),
+                    new ArrayList<>(),
+                    null);
 
     private static final ResolvedSchema SCHEMA_WITH_METADATA =
             new ResolvedSchema(
@@ -91,7 +107,7 @@ public class PostgreSQLTableFactoryTest {
         DynamicTableSource actualSource = createTableSource(SCHEMA, properties);
         PostgreSQLTableSource expectedSource =
                 new PostgreSQLTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         5432,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -101,6 +117,7 @@ public class PostgreSQLTableFactoryTest {
                         MY_PASSWORD,
                         "decoderbufs",
                         "flink",
+                        DebeziumChangelogMode.ALL,
                         PROPERTIES);
         assertEquals(expectedSource, actualSource);
     }
@@ -112,13 +129,14 @@ public class PostgreSQLTableFactoryTest {
         options.put("decoding.plugin.name", "wal2json");
         options.put("debezium.snapshot.mode", "never");
         options.put("slot.name", "flink");
+        options.put("changelog-mode", "upsert");
 
         DynamicTableSource actualSource = createTableSource(options);
         Properties dbzProperties = new Properties();
         dbzProperties.put("snapshot.mode", "never");
         PostgreSQLTableSource expectedSource =
                 new PostgreSQLTableSource(
-                        TableSchemaUtils.getPhysicalSchema(fromResolvedSchema(SCHEMA)),
+                        SCHEMA,
                         5444,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -128,6 +146,7 @@ public class PostgreSQLTableFactoryTest {
                         MY_PASSWORD,
                         "wal2json",
                         "flink",
+                        DebeziumChangelogMode.UPSERT,
                         dbzProperties);
         assertEquals(expectedSource, actualSource);
     }
@@ -145,8 +164,7 @@ public class PostgreSQLTableFactoryTest {
         actualSource = postgreSQLTableSource.copy();
         PostgreSQLTableSource expectedSource =
                 new PostgreSQLTableSource(
-                        TableSchemaUtils.getPhysicalSchema(
-                                fromResolvedSchema(SCHEMA_WITH_METADATA)),
+                        ResolvedSchemaUtils.getPhysicalSchema(SCHEMA_WITH_METADATA),
                         5432,
                         MY_LOCALHOST,
                         MY_DATABASE,
@@ -156,12 +174,20 @@ public class PostgreSQLTableFactoryTest {
                         MY_PASSWORD,
                         "decoderbufs",
                         "flink",
+                        DebeziumChangelogMode.ALL,
                         new Properties());
         expectedSource.producedDataType = SCHEMA_WITH_METADATA.toSourceRowDataType();
         expectedSource.metadataKeys =
                 Arrays.asList("op_ts", "database_name", "schema_name", "table_name");
 
         assertEquals(expectedSource, actualSource);
+
+        ScanTableSource.ScanRuntimeProvider provider =
+                postgreSQLTableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        DebeziumSourceFunction<RowData> debeziumSourceFunction =
+                (DebeziumSourceFunction<RowData>)
+                        ((SourceFunctionProvider) provider).createSourceFunction();
+        assertProducedTypeOfSourceFunction(debeziumSourceFunction, expectedSource.producedDataType);
     }
 
     @Test
@@ -212,6 +238,22 @@ public class PostgreSQLTableFactoryTest {
         }
     }
 
+    @Test
+    public void testUpsertModeWithoutPrimaryKeyError() {
+        try {
+            Map<String, String> properties = getAllOptions();
+            properties.put("changelog-mode", "upsert");
+
+            createTableSource(SCHEMA_WITHOUT_PRIMARY_KEY, properties);
+            fail("exception expected");
+        } catch (Throwable t) {
+            assertTrue(
+                    ExceptionUtils.findThrowableWithMessage(
+                                    t, "Primary key must be present when upsert mode is selected.")
+                            .isPresent());
+        }
+    }
+
     private Map<String, String> getAllOptions() {
         Map<String, String> options = new HashMap<>();
         options.put("connector", "postgres-cdc");
@@ -235,7 +277,7 @@ public class PostgreSQLTableFactoryTest {
                 ObjectIdentifier.of("default", "default", "t1"),
                 new ResolvedCatalogTable(
                         CatalogTable.of(
-                                fromResolvedSchema(schema).toSchema(),
+                                Schema.newBuilder().fromResolvedSchema(schema).build(),
                                 "mock source",
                                 new ArrayList<>(),
                                 options),

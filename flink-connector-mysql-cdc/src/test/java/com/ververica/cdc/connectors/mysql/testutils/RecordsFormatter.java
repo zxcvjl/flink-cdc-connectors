@@ -1,11 +1,9 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Copyright 2022 Ververica Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -27,6 +25,7 @@ import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 
+import com.ververica.cdc.connectors.mysql.source.utils.RecordUtils;
 import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
 import com.ververica.cdc.debezium.table.RowDataDebeziumDeserializeSchema;
 import org.apache.kafka.connect.source.SourceRecord;
@@ -35,9 +34,6 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
-
-import static com.ververica.cdc.connectors.mysql.source.utils.RecordUtils.isSchemaChangeEvent;
-import static com.ververica.cdc.connectors.mysql.source.utils.RecordUtils.isWatermarkEvent;
 
 /** Formatter that formats the {@link org.apache.kafka.connect.source.SourceRecord} to String. */
 public class RecordsFormatter {
@@ -71,10 +67,8 @@ public class RecordsFormatter {
 
     public List<String> format(List<SourceRecord> records) {
         records.stream()
-                // filter signal event
-                .filter(r -> !isWatermarkEvent(r))
-                // filter schema change event
-                .filter(r -> !isSchemaChangeEvent(r))
+                // Keep DataChangeEvent only
+                .filter(RecordUtils::isDataChangeRecord)
                 .forEach(
                         r -> {
                             try {

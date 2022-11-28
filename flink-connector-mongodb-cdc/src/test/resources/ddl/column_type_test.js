@@ -1,10 +1,8 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
+// Copyright 2022 Ververica Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //   http://www.apache.org/licenses/LICENSE-2.0
 // Unless required by applicable law or agreed to in writing,
 // software distributed under the License is distributed on an
@@ -39,8 +37,8 @@ db.getCollection('full_types').insertOne({
     "arrayField": ["hello","world"],
     "doubleArrayField": [1.0, 1.1, null],
     "documentArrayField": [{"a":"hello0", "b": NumberLong("51")}, {"a":"hello1", "b": NumberLong("53")}],
-    "minKeyField": ﻿MinKey(),
-    "maxKeyField":  MaxKey(),
+    "minKeyField": MinKey(),
+    "maxKeyField": MaxKey(),
     "regexField": /^H/i,
     "undefinedField": undefined,
     "nullField": null,
